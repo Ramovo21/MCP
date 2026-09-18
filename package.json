@@ -1,1 +1,70 @@
-{"name":"omnimcp","private":true,"version":"0.1.0","type":"module","packageManager":"pnpm@10.32.1","engines":{"node":">=22.19.0"},"scripts":{"dev":"concurrently -k \"pnpm dev:gateway\" \"pnpm dev:web\"","dev:gateway":"tsx watch --env-file-if-exists=.env apps/gateway/src/main.ts","dev:web":"pnpm --filter @omnimcp/web dev","build":"tsc -p tsconfig.build.json && pnpm --filter @omnimcp/web build","typecheck":"tsc --noEmit && pnpm --filter @omnimcp/web typecheck","lint":"eslint .","format":"prettier --write .","test":"vitest run tests/unit","test:integration":"vitest run tests/integration","test:e2e":"playwright test","db:start":"supabase start","db:migrate":"supabase db reset","db:seed":"tsx --env-file-if-exists=.env scripts/seed.ts","inspect":"mcp-inspector --cli","verify":"pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm build"},"dependencies":{"@modelcontextprotocol/server":"2.0.0","@modelcontextprotocol/client":"2.0.0","@modelcontextprotocol/node":"2.0.0","@supabase/supabase-js":"^2.57.4","ajv":"^8.17.1","ajv-formats":"^3.0.1","dotenv":"^17.2.2","express":"^5.1.0","helmet":"^8.1.0","ipaddr.js":"^2.2.0","pg":"^8.16.3","pino":"^9.9.4","undici":"^7.16.0","yaml":"^2.8.1","zod":"^4.1.11"},"devDependencies":{"@electric-sql/pglite":"^0.3.10","@eslint/js":"^9.36.0","@modelcontextprotocol/inspector":"2.7.0","@playwright/test":"^1.55.1","@types/express":"^5.0.3","@types/node":"^24.5.2","@types/pg":"^8.15.5","concurrently":"^9.2.1","eslint":"^9.36.0","pnpm":"10.32.1","prettier":"^3.6.2","supabase":"^2.48.3","tsx":"^4.20.5","typescript":"^5.9.2","typescript-eslint":"^8.44.0","vitest":"^3.2.4"}}
+{
+  "name": "omnimcp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"pnpm dev:gateway\" \"pnpm dev:web\"",
+    "dev:gateway": "tsx watch --env-file-if-exists=.env apps/gateway/src/main.ts",
+    "dev:web": "pnpm --filter @omnimcp/web dev",
+    "build": "tsc -p tsconfig.build.json && pnpm --filter @omnimcp/web build",
+    "typecheck": "tsc --noEmit && pnpm --filter @omnimcp/web typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test",
+    "db:start": "supabase start",
+    "db:migrate": "supabase db reset",
+    "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
+    "inspect": "mcp-inspector --cli",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm build",
+    "env:local": "node scripts/local-env.mjs",
+    "test:live": "vitest run tests/live",
+    "test:inspector": "vitest run tests/integration/mcp.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@supabase/supabase-js": "^2.57.4",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "ipaddr.js": "^2.2.0",
+    "pg": "^8.16.3",
+    "pino": "^9.9.4",
+    "undici": "^7.16.0",
+    "yaml": "^2.8.1",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.10",
+    "@eslint/js": "^9.36.0",
+    "@modelcontextprotocol/inspector": "2.7.0",
+    "@playwright/test": "^1.55.1",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.5.2",
+    "@types/pg": "^8.15.5",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.36.0",
+    "pnpm": "10.32.1",
+    "prettier": "^3.6.2",
+    "supabase": "^2.48.3",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.0",
+    "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "^8.5.23"
+    }
+  }
+}
