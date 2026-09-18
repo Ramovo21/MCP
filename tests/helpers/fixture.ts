@@ -1,0 +1,21 @@
+import { randomBytes,randomUUID } from 'node:crypto';
+import { testDatabase } from './database.js';
+import { ConnectorRegistry } from '../../packages/connector-sdk/src/index.js';
+import { demoCrm } from '../../connectors/demo-crm/src/index.js';
+import { ConnectorWorker } from '../../services/connector-worker/src/index.js';
+import { AesGcmVault,hash } from '../../packages/shared/src/secrets.js';
+import { Authenticator } from '../../apps/gateway/src/auth.js';
+import { ExecutionService } from '../../apps/gateway/src/execution.js';
+import type { Principal } from '../../packages/shared/src/index.js';
+export async function fixture(){const db=await testDatabase(),org=randomUUID(),user=randomUUID(),approver=randomUUID(),connection=randomUUID(),customer=randomUUID(),key='omni_'+randomBytes(32).toString('hex');
+ await db.system.query("insert into auth.users(id,email) values($1,'one@example.test'),($2,'two@example.test')",[user,approver]);
+ await db.system.query("insert into organizations(id,name) values($1,'Acme')",[org]);await db.system.query("insert into organization_members values($1,$2,'owner'),($1,$3,'admin')",[org,user,approver]);
+ await db.system.query("insert into connections(id,organization_id,name,connector_id) values($1,$2,'Demo CRM','demo-crm')",[connection,org]);
+ await db.system.query("insert into demo_customers(id,organization_id,name,email,company) values($1,$2,'Ada Nguyen','ada@example.test','Acme Labs')",[customer,org]);
+ const registry=new ConnectorRegistry().register(demoCrm),vault=new AesGcmVault(randomBytes(32).toString('base64'));
+ const definitions=await demoCrm.discover({organizationId:org,connection:{id:connection,organization_id:org,name:'Demo CRM',connector_id:'demo-crm',status:'active',config:{}},secrets:{},database:db,executionId:randomUUID(),signal:AbortSignal.timeout(1000)});
+ for(const t of definitions)await db.system.query('insert into tools(organization_id,connection_id,name,description,input_schema,risk,baseline_risk,enabled) values($1,$2,$3,$4,$5,$6,$6,true)',[org,connection,`${t.namespace}.${t.name}`,t.description,JSON.stringify(t.inputSchema),t.risk]);
+ await db.system.query("insert into api_keys(organization_id,name,prefix,key_hash,scopes,created_by) values($1,'Test','omni_', $2,$3,$4)",[org,hash(key),definitions.map(t=>`${t.namespace}.${t.name}`),user]);
+ const auth=new Authenticator(db,{async getUser(token){if(token==='test-user')return {id:user};if(token==='test-approver')return {id:approver};throw new Error('Invalid test token');}}),execution=new ExecutionService(db,vault,new ConnectorWorker(registry),auth);
+ const principal:Principal={organizationId:org,userId:user,role:'owner'};
+ return {db,org,user,approver,connection,customer,key,registry,vault,auth,execution,principal};}
