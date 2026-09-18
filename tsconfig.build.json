@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","compilerOptions":{"sourceMap":true,"declaration":true},"exclude":["node_modules","dist","apps/web","tests","vitest.config.ts"]}

@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - services/*
+  - packages/*
+  - connectors/*
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - supabase

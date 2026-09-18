@@ -1,0 +1,14 @@
+node_modules/
+.pnpm-store/
+.next/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+test-results/
+playwright-report/
+.local/
+supabase/.temp/
+supabase/.branches/
