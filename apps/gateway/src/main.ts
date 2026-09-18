@@ -2,16 +2,43 @@ import 'dotenv/config';
 import { z } from 'zod';
 import { PostgresDatabase } from '../../../packages/database/src/index.js';
 import { AesGcmVault } from '../../../packages/shared/src/secrets.js';
-import { ConnectorRegistry } from '../../../packages/connector-sdk/src/index.js';
-import { demoCrm } from '../../../connectors/demo-crm/src/index.js';
+import { loadRegistry } from './registry.js';
+import { ConnectionService } from './connections.js';
 import { ConnectorWorker } from '../../../services/connector-worker/src/index.js';
-import { Authenticator,supabaseVerifier } from './auth.js';
+import { Authenticator, supabaseVerifier } from './auth.js';
 import { ExecutionService } from './execution.js';
 import { PostgresRateLimiter } from './rate-limit.js';
 import { createApp } from './app.js';
-const env=z.object({DATABASE_URL:z.string().min(1),SUPABASE_URL:z.url(),SUPABASE_ANON_KEY:z.string().min(1),MASTER_KEY:z.string(),WEB_ORIGIN:z.url().default('http://localhost:3000'),PORT:z.coerce.number().default(4000),GATEWAY_HOSTS:z.string().default('localhost,127.0.0.1')}).parse(process.env);
-const db=new PostgresDatabase(env.DATABASE_URL),vault=new AesGcmVault(env.MASTER_KEY),registry=new ConnectorRegistry().register(demoCrm);
-const auth=new Authenticator(db,supabaseVerifier(env.SUPABASE_URL,env.SUPABASE_ANON_KEY)),execution=new ExecutionService(db,vault,new ConnectorWorker(registry),auth);
-const app=createApp({execution,auth,rateLimiter:new PostgresRateLimiter(db),webOrigin:env.WEB_ORIGIN,hosts:env.GATEWAY_HOSTS.split(',')});
-const server=app.listen(env.PORT,()=>process.stdout.write(`OmniMCP listening on ${env.PORT}\n`));
-for(const event of ['SIGINT','SIGTERM'])process.on(event,()=>{server.close(()=>{void db.close().then(()=>process.exit(0));});});
+const env = z
+  .object({
+    DATABASE_URL: z.string().min(1),
+    SUPABASE_URL: z.url(),
+    SUPABASE_ANON_KEY: z.string().min(1),
+    MASTER_KEY: z.string(),
+    WEB_ORIGIN: z.url().default('http://localhost:3000'),
+    PORT: z.coerce.number().default(4000),
+    GATEWAY_HOSTS: z.string().default('localhost,127.0.0.1'),
+  })
+  .parse(process.env);
+const db = new PostgresDatabase(env.DATABASE_URL),
+  vault = new AesGcmVault(env.MASTER_KEY),
+  registry = await loadRegistry();
+const auth = new Authenticator(db, supabaseVerifier(env.SUPABASE_URL, env.SUPABASE_ANON_KEY)),
+  execution = new ExecutionService(db, vault, new ConnectorWorker(registry), auth);
+const app = createApp({
+  execution,
+  auth,
+  connections: new ConnectionService(db, vault, registry),
+  rateLimiter: new PostgresRateLimiter(db),
+  webOrigin: env.WEB_ORIGIN,
+  hosts: env.GATEWAY_HOSTS.split(','),
+});
+const server = app.listen(env.PORT, () =>
+  process.stdout.write(`OmniMCP listening on ${env.PORT}\n`),
+);
+for (const event of ['SIGINT', 'SIGTERM'])
+  process.on(event, () => {
+    server.close(() => {
+      void db.close().then(() => process.exit(0));
+    });
+  });
