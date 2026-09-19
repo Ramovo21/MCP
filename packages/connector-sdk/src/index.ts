@@ -28,6 +28,7 @@ export interface Connector {
   id: string;
   name: string;
   version: string;
+  initialize?(ctx: ConnectorContext): Promise<void>;
   discover(ctx: ConnectorContext): Promise<ToolDefinition[]>;
   execute(tool: ToolRecord, args: JsonObject, ctx: ConnectorContext): Promise<unknown>;
   test?(ctx: ConnectorContext): Promise<void>;

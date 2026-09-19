@@ -1,0 +1,44 @@
+name: Verify OmniMCP
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:integration
+      - name: Start local Supabase and seed
+        run: |
+          pnpm db:start > /tmp/omnimcp-supabase-start.log 2>&1
+          pnpm env:local
+          pnpm db:seed
+      - run: pnpm test:live
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Browser verification
+        run: |
+          pnpm start:gateway > /tmp/omnimcp-gateway.log 2>&1 &
+          pnpm --filter @omnimcp/web start > /tmp/omnimcp-web.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:4000/health && curl -fsS http://localhost:3000/dashboard > /dev/null; then break; fi
+            sleep 2
+          done
+          pnpm test:e2e
+      - name: Stop local Supabase
+        if: always()
+        run: pnpm exec supabase stop --no-backup > /tmp/omnimcp-supabase-stop.log 2>&1

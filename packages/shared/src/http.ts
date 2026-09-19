@@ -26,7 +26,16 @@ export async function resolveSafeHost(
     )
   )
     throw new AppError('SSRF_BLOCKED', 'Network destination is forbidden');
-  const ips = await resolve(normalized);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const ips = await Promise.race([
+    resolve(normalized),
+    new Promise<never>((_r, reject) => {
+      timer = setTimeout(
+        () => reject(new AppError('DNS_TIMEOUT', 'Connector DNS lookup timed out', 502)),
+        3000,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
   if (
     !ips.length ||
     ips.some((ip) => {
@@ -69,7 +78,12 @@ export class SafeHttp {
       ip = ips[0]!;
     // DNS is resolved and checked once, then pinned in the socket lookup; Host/SNI retain original hostname.
     const agent = new Agent({
-      connect: { lookup: (_host, _options, cb) => cb(null, ip.address, ip.family) },
+      connect: {
+        lookup: (_host, options, cb) =>
+          options.all
+            ? cb(null, [{ address: ip.address, family: ip.family }])
+            : cb(null, ip.address, ip.family),
+      },
       maxResponseSize: 2 * 1024 * 1024,
     });
     const signal = AbortSignal.any([
@@ -120,7 +134,7 @@ export class SafeHttp {
   async json(input: string | URL, init: RequestInit = {}) {
     const r = await this.fetch(input, init);
     if (!r.ok) throw new AppError('UPSTREAM_ERROR', `Upstream returned HTTP ${r.status}`, 502);
-    if (r.status === 204) return { ok: true };
+    if (r.status === 204 || init.method === 'HEAD') return { ok: true, status: r.status };
     try {
       return (await r.json()) as unknown;
     } catch {

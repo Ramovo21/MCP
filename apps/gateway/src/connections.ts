@@ -10,6 +10,7 @@ import {
   type JsonObject,
 } from '../../../packages/shared/src/index.js';
 import type { SecretVault } from '../../../packages/shared/src/secrets.js';
+import { validateToolSchema } from '../../../packages/mcp-core/src/validation.js';
 import type {
   ConnectorRegistry,
   ConnectorContext,
@@ -99,16 +100,23 @@ export class ConnectionService {
         );
       await audit(sql, p, 'connection.created', id, { connector: input.connectorId });
     });
+    if (plugin.initialize) await plugin.initialize(await this.context(p, id));
     return { id };
   }
   async discover(p: Principal, id: string) {
     assertAdmin(p);
     const ctx = await this.context(p, id),
       definitions = await this.registry.get(ctx.connection.connector_id).discover(ctx);
-    return definitions.map(({ execute: _handler, ...t }) => ({
+    if (definitions.length > 500)
+      throw new AppError('TOO_MANY_TOOLS', 'Connection tool limit is 500');
+    const tools = definitions.map(({ execute: _handler, ...t }) => ({
       ...t,
       fullName: toolName.parse(`${t.namespace}.${t.name}`),
     }));
+    if (new Set(tools.map((t) => t.fullName)).size !== tools.length)
+      throw new AppError('DUPLICATE_TOOL', 'Discovered tool names are not unique');
+    for (const tool of tools) validateToolSchema(tool.inputSchema);
+    return tools;
   }
   async import(p: Principal, id: string, names: string[]) {
     assertAdmin(p);
@@ -116,9 +124,10 @@ export class ConnectionService {
     if (names.some((n) => !definitions.some((t) => t.fullName === n)))
       throw new AppError('INVALID_TOOL', 'Selected tool was not discovered');
     return this.db.tenant(p.organizationId, async (sql) => {
+      let imported = 0;
       for (const t of definitions.filter((t) => names.includes(t.fullName))) {
-        await sql.query(
-          `insert into tools(organization_id,connection_id,name,description,input_schema,risk,baseline_risk,enabled,config) values($1,$2,$3,$4,$5,$6,$6,true,$7) on conflict(organization_id,name) do nothing`,
+        const result = await sql.query(
+          `insert into tools(organization_id,connection_id,name,description,input_schema,risk,baseline_risk,enabled,config) values($1,$2,$3,$4,$5,$6,$6,true,$7) on conflict(organization_id,name) do nothing returning id`,
           [
             p.organizationId,
             id,
@@ -129,9 +138,24 @@ export class ConnectionService {
             JSON.stringify(t.config ?? {}),
           ],
         );
+        if (result.rows.length) imported++;
+        else {
+          const existing = (
+            await sql.query<{ connection_id: string }>(
+              'select connection_id from tools where organization_id=$1 and name=$2',
+              [p.organizationId, t.fullName],
+            )
+          ).rows[0];
+          if (existing?.connection_id !== id)
+            throw new AppError(
+              'TOOL_NAME_CONFLICT',
+              'A selected tool name belongs to another connection; use a different namespace',
+              409,
+            );
+        }
       }
       await audit(sql, p, 'tools.imported', id, { names });
-      return { imported: names.length };
+      return { imported };
     });
   }
   async test(p: Principal, id: string) {

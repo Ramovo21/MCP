@@ -58,7 +58,7 @@ export function buildSearch(config: JsonObject, args: JsonObject) {
   };
 }
 export function postgresConnector(
-  policy: NetworkPolicy & {insecurePgHosts?:readonly string[]} = { privateHosts: [] },
+  policy: NetworkPolicy & { insecurePgHosts?: readonly string[] } = { privateHosts: [] },
 ): Connector & { schema(ctx: ConnectorContext): Promise<unknown> } {
   async function session<T>(
     ctx: ConnectorContext,
@@ -81,7 +81,10 @@ export function postgresConnector(
       connectionTimeoutMillis: 5000,
       query_timeout: 10000,
       statement_timeout: 10000,
-      ssl: policy.insecurePgHosts?.includes(url.hostname) && policy.privateHosts.includes(url.hostname) ? false : { rejectUnauthorized: true, servername: url.hostname },
+      ssl:
+        policy.insecurePgHosts?.includes(url.hostname) && policy.privateHosts.includes(url.hostname)
+          ? false
+          : { rejectUnauthorized: true, servername: url.hostname },
     });
     try {
       await client.connect();
@@ -201,7 +204,7 @@ export function postgresConnector(
     },
     async execute(tool, args, ctx) {
       const current = configSchema.parse(ctx.connection.config),
-        t = selection.parse(tool.config),
+        t = selection.strip().parse(tool.config),
         operation = String(tool.config.operation);
       if (
         !current.tables.some(

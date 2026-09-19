@@ -1,0 +1,17 @@
+FROM node:24-alpine AS build
+WORKDIR /app
+RUN npm install -g pnpm@10.32.1
+COPY . .
+RUN pnpm install --frozen-lockfile && pnpm exec tsc -p tsconfig.build.json
+
+FROM node:24-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN npm install -g pnpm@10.32.1
+COPY --from=build /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+COPY --from=build /app/apps/gateway/package.json ./apps/gateway/package.json
+RUN pnpm install --prod --frozen-lockfile
+COPY --from=build /app/dist ./dist
+USER node
+EXPOSE 4000
+CMD ["node", "dist/apps/gateway/src/main.js"]

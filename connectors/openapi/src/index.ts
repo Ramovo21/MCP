@@ -10,7 +10,7 @@ function object(value: unknown): JsonObject {
 }
 export function parseSpec(source: unknown): JsonObject {
   const root = object(typeof source === 'string' ? parse(source, { maxAliasCount: 20 }) : source);
-  if (!String(root.openapi).startsWith('3.'))
+  if (!/^3\.[01]\./.test(String(root.openapi)))
     throw new AppError('INVALID_SPEC', 'OpenAPI 3.0 or 3.1 is required');
   if (JSON.stringify(root).length > 750000)
     throw new AppError('INVALID_SPEC', 'Specification exceeds size limit');
@@ -54,9 +54,9 @@ export function operations(source: unknown, namespace: string): ToolDefinition[]
           ...(Array.isArray(pathItem.parameters) ? pathItem.parameters : []),
           ...(Array.isArray(op.parameters) ? op.parameters : []),
         ].map((p) => object(dereference(p, root)));
-      const properties: JsonObject = {},
+      const properties: JsonObject = Object.create(null),
         required: string[] = [],
-        locations: JsonObject = {};
+        locations: JsonObject = Object.create(null);
       for (const p of parameters) {
         const name = String(p.name);
         if (!['path', 'query', 'header'].includes(String(p.in)))
@@ -66,7 +66,9 @@ export function operations(source: unknown, namespace: string): ToolDefinition[]
           );
         if (
           p.in === 'header' &&
-          /authorization|cookie|host|connection|content-length|proxy|transfer-encoding/i.test(name)
+          /authorization|cookie|host|connection|content-length|proxy|transfer-encoding|idempotency|api.?key|token|secret/i.test(
+            name,
+          )
         )
           throw new AppError(
             'INVALID_SPEC',
@@ -74,7 +76,18 @@ export function operations(source: unknown, namespace: string): ToolDefinition[]
           );
         if (properties[name])
           throw new AppError('INVALID_SPEC', 'Duplicate parameter names are unsupported');
-        properties[name] = dereference(p.schema ?? { type: 'string' }, root);
+        const schema = object(dereference(p.schema ?? { type: 'string' }, root));
+        if (
+          schema.type === 'object' ||
+          p.content ||
+          p.explode === false ||
+          (p.style && p.style !== (p.in === 'query' ? 'form' : 'simple'))
+        )
+          throw new AppError(
+            'INVALID_SPEC',
+            'Custom parameter serialization requires a custom connector',
+          );
+        properties[name] = schema;
         locations[name] = p.in;
         if (p.required || p.in === 'path') required.push(name);
       }
@@ -118,8 +131,16 @@ export function openApiConnector(http = new SafeHttp()): Connector {
     async discover(ctx) {
       const c = ctx.connection.config;
       let spec = c.spec;
-      if (!spec && typeof c.specUrl === 'string')
-        spec = await http.json(c.specUrl, { signal: ctx.signal });
+      if (!spec && typeof c.specUrl === 'string') {
+        const response = await http.fetch(c.specUrl, { signal: ctx.signal });
+        if (!response.ok)
+          throw new AppError(
+            'UPSTREAM_ERROR',
+            `Specification endpoint returned HTTP ${response.status}`,
+            502,
+          );
+        spec = await response.text();
+      }
       return operations(spec, String(c.namespace ?? 'api'));
     },
     async execute(tool, args, ctx) {

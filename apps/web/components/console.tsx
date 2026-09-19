@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, useRef, type FormEvent, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -89,10 +89,24 @@ export default function Console() {
     [newConnection, setNewConnection] = useState(false),
     [discovered, setDiscovered] = useState<{ id: string; tools: Row[]; selected: string[] }>(),
     [schema, setSchema] = useState<{ id: string; columns: Row[]; selected: string[] }>();
+  const identity = useRef<string | undefined>(undefined),
+    currentOrg = useRef(org);
+  currentOrg.current = org;
+  const clearWorkspace = useCallback(() => {
+    setData(undefined);
+    setDetail(undefined);
+    setSelectedTool(undefined);
+    setDiscovered(undefined);
+    setSchema(undefined);
+    setNewConnection(false);
+    setError('');
+    setNotice('');
+  }, []);
   const load = useCallback(async () => {
     if (!org) return;
+    const requestedIdentity = identity.current;
     const result = await api<ConsoleData>(org, '/api/console');
-    setData(result);
+    if (currentOrg.current === org && identity.current === requestedIdentity) setData(result);
   }, [org]);
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -113,6 +127,14 @@ export default function Console() {
       const sync = async () => {
         const { data } = await auth.auth.getSession();
         if (!active) return;
+        const nextIdentity = data.session?.user.id;
+        if (identity.current !== nextIdentity) {
+          identity.current = nextIdentity;
+          currentOrg.current = '';
+          setOrg('');
+          setMemberships([]);
+          clearWorkspace();
+        }
         setSession(Boolean(data.session));
         setInitialized(true);
         if (data.session) {
@@ -123,7 +145,14 @@ export default function Console() {
           }
           const orgs = response.data ?? [];
           setMemberships(orgs);
-          setOrg((old) => (orgs.some((o) => o.id === old) ? old : (orgs[0]?.id ?? '')));
+          const saved = sessionStorage.getItem(`omnimcp.organization.${data.session.user.id}`);
+          setOrg((old) =>
+            orgs.some((o) => o.id === old)
+              ? old
+              : orgs.some((o) => o.id === saved)
+                ? saved!
+                : (orgs[0]?.id ?? ''),
+          );
         }
       };
       void sync();
@@ -138,7 +167,7 @@ export default function Console() {
       setError((e as Error).message);
       setInitialized(true);
     }
-  }, []);
+  }, [clearWorkspace]);
   useEffect(() => {
     if (org) void run(load);
   }, [org, run, load]);
@@ -285,7 +314,16 @@ export default function Console() {
               aria-label="Organization"
               style={{ width: 210 }}
               value={org}
-              onChange={(e) => setOrg(e.target.value)}
+              onChange={(e) => {
+                currentOrg.current = e.target.value;
+                if (identity.current)
+                  sessionStorage.setItem(
+                    `omnimcp.organization.${identity.current}`,
+                    e.target.value,
+                  );
+                clearWorkspace();
+                setOrg(e.target.value);
+              }}
             >
               {memberships.map((m) => (
                 <option key={m.id} value={m.id}>

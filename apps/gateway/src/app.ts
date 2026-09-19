@@ -17,7 +17,7 @@ export interface AppServices {
   hosts: string[];
   connections?: ConnectionService;
 }
-export function createApp(s: AppServices) {
+export function createApp(s: AppServices): express.Express {
   const app = express(),
     logger = pino();
   app.disable('x-powered-by');
@@ -35,7 +35,7 @@ export function createApp(s: AppServices) {
         'Access-Control-Allow-Headers',
         'Authorization, Content-Type, X-Organization-Id, Idempotency-Key, MCP-Protocol-Version, Mcp-Method, Mcp-Name',
       );
-      res.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     }
     if (req.method === 'OPTIONS') {
       res.sendStatus(204);

@@ -7,7 +7,7 @@ import { remoteMcpConnector } from '../../../connectors/remote-mcp/src/index.js'
 import { webhookConnector } from '../../../connectors/webhook/src/index.js';
 export async function loadRegistry() {
   const policy = {
-    insecurePgHosts:(process.env.CONNECTOR_INSECURE_PG_HOSTS??'').split(',').filter(Boolean),
+      insecurePgHosts: (process.env.CONNECTOR_INSECURE_PG_HOSTS ?? '').split(',').filter(Boolean),
       privateHosts: (process.env.CONNECTOR_PRIVATE_HOSTS ?? '').split(',').filter(Boolean),
     },
     http = new SafeHttp(policy);

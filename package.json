@@ -25,7 +25,10 @@
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm build",
     "env:local": "node scripts/local-env.mjs",
     "test:live": "vitest run tests/live",
-    "test:inspector": "vitest run tests/integration/mcp.test.ts"
+    "test:inspector": "vitest run tests/integration/mcp.test.ts",
+    "start:gateway": "node --env-file-if-exists=.env dist/apps/gateway/src/main.js",
+    "executions:reconcile": "tsx --env-file-if-exists=.env scripts/reconcile.ts",
+    "test:inspector:live": "tsx --env-file-if-exists=.env scripts/inspector-live.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

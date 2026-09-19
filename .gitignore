@@ -11,5 +11,6 @@ coverage/
 test-results/
 playwright-report/
 .local/
+.local-audit.json
 supabase/.temp/
 supabase/.branches/

@@ -138,6 +138,11 @@ export class ExecutionService {
         return { execution: other, dispatch: false };
       }
       await this.step(sql, p.organizationId, id, 'authenticated');
+      if (failure)
+        await sql.query(
+          'update executions set finished_at=now(),duration_ms=0 where organization_id=$1 and id=$2',
+          [p.organizationId, id],
+        );
       await this.step(sql, p.organizationId, id, failure ? 'denied' : 'policy_evaluated', {
         reason: decision.reason,
       });
@@ -166,6 +171,20 @@ export class ExecutionService {
       const current = await this.auth.refresh(p);
       const data = await this.db.tenant(p.organizationId, async (sql) => {
         const tool = await this.resolve(sql, current, e.tool_name);
+        if (evaluate(tool, await this.policy(sql, p.organizationId)).approval) {
+          const approval = (
+            await sql.query(
+              "select id from approval_requests where organization_id=$1 and execution_id=$2 and status='approved'",
+              [p.organizationId, e.id],
+            )
+          ).rows[0];
+          if (!approval)
+            throw new AppError(
+              'APPROVAL_REQUIRED',
+              'Policy changed before dispatch; submit a new request',
+              409,
+            );
+        }
         const connection = (
           await sql.query<Connection>(
             'select * from connections where organization_id=$1 and id=$2',
@@ -211,6 +230,8 @@ export class ExecutionService {
         bytes: Buffer.byteLength(JSON.stringify(result) ?? 'null'),
         type: Array.isArray(result) ? 'array' : typeof result,
       };
+      if (metadata.bytes > 2 * 1024 * 1024)
+        throw new AppError('RESPONSE_TOO_LARGE', 'Tool result exceeds 2 MiB');
       await this.finish(e, p, 'succeeded', metadata, null, Date.now() - started);
       return { executionId: e.id, status: 'succeeded', result, durationMs: Date.now() - started };
     } catch (error) {

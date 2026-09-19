@@ -16,6 +16,7 @@ import { verifySignature } from '../../../connectors/webhook/src/index.js';
 import { ApprovalService } from './approvals.js';
 import { connectionInput, type ConnectionService } from './connections.js';
 import type { ExecutionService } from './execution.js';
+import { llmConfigured, proposeTool } from './assistant.js';
 export function mountInbound(app: Express, connections: ConnectionService) {
   app.post('/webhooks/:id', async (req, res) => {
     const id = uuid.parse(req.params.id),
@@ -30,7 +31,11 @@ export function mountInbound(app: Express, connections: ConnectionService) {
       { organizationId: row.organization_id, role: 'viewer' },
       id,
     );
-    if (row.config.inbound === false || !ctx.secrets.signingSecret)
+    if (
+      row.config.inbound === false ||
+      !ctx.secrets.signingSecret ||
+      ctx.secrets.signingSecret.length < 32
+    )
       throw new AppError('FORBIDDEN', 'Inbound webhook is disabled', 403);
     const raw = (req as Request & { rawBody?: Buffer }).rawBody;
     if (!raw) throw new AppError('INVALID_BODY', 'JSON webhook body required');
@@ -64,6 +69,13 @@ export function mountManagement(
   execution: ExecutionService,
   connections: ConnectionService,
 ) {
+  app.post('/api/assist', async (req, res) => {
+    const input = z
+      .object({ prompt: z.string().min(1).max(2000) })
+      .strict()
+      .parse(req.body);
+    res.json(await proposeTool(res.locals.principal, input.prompt, execution));
+  });
   const approvals = new ApprovalService(execution),
     db = execution.db;
   app.get('/api/console', async (_req, res) => {
@@ -74,6 +86,7 @@ export function mountManagement(
       return {
         organization: (await query('select * from organizations where id=$1'))[0],
         role: p.role,
+        features: { naturalLanguage: llmConfigured() },
         connectors: connections.registry.list(),
         connections: await query(
           'select id,name,connector_id,status,created_at from connections where organization_id=$1 order by created_at desc',

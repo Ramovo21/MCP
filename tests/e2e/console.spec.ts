@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { createClient } from '@supabase/supabase-js';
+import { PostgresDatabase } from '../../packages/database/src/index.js';
 test('real Supabase sign-in, dashboard, tool invocation, and management pages', async ({
   page,
 }) => {
@@ -39,4 +41,43 @@ test('real Supabase sign-in, dashboard, tool invocation, and management pages', 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: '.local/dashboard-desktop.png', fullPage: true });
   expect(errors).toEqual([]);
+});
+test('organization switching and sign-out clear workspace data', async ({ page }) => {
+  const auth = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  await auth.auth.signInWithPassword({
+    email: process.env.SEED_EMAIL!,
+    password: process.env.SEED_PASSWORD!,
+  });
+  const created = await auth.rpc('create_organization', { org_name: 'E2E isolated workspace' });
+  if (created.error) throw created.error;
+  const id = String(created.data),
+    db = new PostgresDatabase(process.env.DATABASE_URL!);
+  try {
+    await page.goto('/dashboard');
+    await page.getByLabel('Email', { exact: true }).fill(process.env.SEED_EMAIL!);
+    await page.getByLabel('Password', { exact: true }).fill(process.env.SEED_PASSWORD!);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.getByLabel('Organization', { exact: true }).selectOption(id);
+    await expect(
+      page.getByText('Import your first tool from Connections.', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.locator('main').getByText('demo.crm.customer.search', { exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole('link', { name: 'Organization', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: 'E2E isolated workspace', exact: true }),
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
+    await expect(page.getByText('E2E isolated workspace', { exact: true })).toHaveCount(0);
+  } finally {
+    await db.system.query('delete from approval_policies where organization_id=$1', [id]);
+    await db.system.query('delete from organization_members where organization_id=$1', [id]);
+    await db.system.query('delete from organizations where id=$1', [id]);
+    await db.close();
+    await auth.auth.signOut();
+  }
 });

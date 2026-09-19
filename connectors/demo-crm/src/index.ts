@@ -4,6 +4,28 @@ export const demoCrm = defineConnector({
   id: 'demo-crm',
   name: 'Demo CRM',
   version: '1.0.0',
+  async initialize(ctx) {
+    await ctx.database.tenant(ctx.organizationId, async (sql) => {
+      await sql.query('select id from organizations where id=$1 for update', [ctx.organizationId]);
+      if (
+        (
+          await sql.query('select id from demo_customers where organization_id=$1 limit 1', [
+            ctx.organizationId,
+          ])
+        ).rows.length
+      )
+        return;
+      for (const [name, email, company] of [
+        ['Ada Nguyen', 'ada@example.test', 'Northstar Labs'],
+        ['Minh Tran', 'minh@example.test', 'Orbit Commerce'],
+        ['Sam Rivera', 'sam@example.test', 'Cloudworks'],
+      ])
+        await sql.query(
+          'insert into demo_customers(organization_id,name,email,company) values($1,$2,$3,$4)',
+          [ctx.organizationId, name, email, company],
+        );
+    });
+  },
   tools: [
     {
       namespace: 'demo.crm.customer',

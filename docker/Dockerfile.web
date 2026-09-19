@@ -1,0 +1,21 @@
+FROM node:24-alpine AS build
+WORKDIR /app
+RUN npm install -g pnpm@10.32.1
+COPY . .
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_GATEWAY_URL
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_GATEWAY_URL=$NEXT_PUBLIC_GATEWAY_URL
+ENV NEXT_STANDALONE=1
+RUN pnpm install --frozen-lockfile && pnpm --filter @omnimcp/web build
+
+FROM node:24-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
+COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./
+COPY --from=build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+USER node
+EXPOSE 3000
+CMD ["node", "apps/web/server.js"]

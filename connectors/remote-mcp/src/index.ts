@@ -73,7 +73,7 @@ export function remoteMcpConnector(http = new SafeHttp()): Connector {
       });
     },
     async execute(tool, args, ctx) {
-      return withClient(ctx, (client) =>
+      const result = await withClient(ctx, (client) =>
         client.callTool(
           {
             name: String(tool.config.upstreamName),
@@ -83,6 +83,9 @@ export function remoteMcpConnector(http = new SafeHttp()): Connector {
           { timeout: 20000 },
         ),
       );
+      if (result.isError)
+        throw new AppError('UPSTREAM_TOOL_ERROR', 'Upstream tool reported an error', 502);
+      return result;
     },
   };
 }
