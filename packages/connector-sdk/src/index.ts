@@ -32,6 +32,7 @@ export interface Connector {
   discover(ctx: ConnectorContext): Promise<ToolDefinition[]>;
   execute(tool: ToolRecord, args: JsonObject, ctx: ConnectorContext): Promise<unknown>;
   test?(ctx: ConnectorContext): Promise<void>;
+  schema?(ctx: ConnectorContext): Promise<unknown>;
 }
 export function defineConnector(
   def: Omit<Connector, 'discover' | 'execute'> & { tools: ToolDefinition[] },

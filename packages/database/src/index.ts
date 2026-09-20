@@ -14,10 +14,10 @@ export interface Database {
 export class PostgresDatabase implements Database {
   readonly pool: pg.Pool;
   readonly system: Sql;
-  constructor(url: string) {
+  constructor(url: string, max = 20) {
     this.pool = new pg.Pool({
       connectionString: url,
-      max: 20,
+      max,
       connectionTimeoutMillis: 5000,
       idleTimeoutMillis: 30000,
     });

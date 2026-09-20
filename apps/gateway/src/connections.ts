@@ -23,6 +23,24 @@ export const connectionInput = z
     secrets: z.record(z.string(), z.string().max(20000)).default({}),
   })
   .strict();
+function validatePublicConfig(config: JsonObject) {
+  for (const [key, value] of Object.entries(config)) {
+    if (typeof value === 'string' && /password|secret|token|authorization|credential/i.test(key))
+      throw new AppError('SECRET_IN_CONFIG', 'Store credentials in the secrets object');
+    if (typeof value === 'string' && /url$/i.test(key)) {
+      const url = new URL(value);
+      if (url.username || url.password || url.search)
+        throw new AppError(
+          'SECRET_IN_URL',
+          'Connector URLs cannot contain credentials or query parameters',
+        );
+    }
+    if (Array.isArray(value)) {
+      for (const item of value)
+        if (item && typeof item === 'object') validatePublicConfig(item as JsonObject);
+    } else if (value && typeof value === 'object') validatePublicConfig(value as JsonObject);
+  }
+}
 export class ConnectionService {
   constructor(
     readonly db: Database,
@@ -63,18 +81,7 @@ export class ConnectionService {
     assertAdmin(p);
     const plugin = this.registry.get(input.connectorId),
       id = randomUUID();
-    for (const [key, value] of Object.entries(input.config)) {
-      if (/password|secret|token|authorization|credential/i.test(key))
-        throw new AppError('SECRET_IN_CONFIG', 'Store credentials in the secrets object');
-      if (typeof value === 'string' && /url$/i.test(key)) {
-        const url = new URL(value);
-        if (url.username || url.password || url.search)
-          throw new AppError(
-            'SECRET_IN_URL',
-            'Connector URLs cannot contain credentials or query parameters',
-          );
-      }
-    }
+    validatePublicConfig(input.config);
     await this.db.system.query(
       'insert into connector_definitions(id,name,version) values($1,$2,$3) on conflict(id) do nothing',
       [plugin.id, plugin.name, plugin.version],
@@ -175,6 +182,14 @@ export class ConnectionService {
       );
       if (!r.rows[0]) throw new AppError('NOT_FOUND', 'Connection not found', 404);
       if (status === 'revoked') {
+        await sql.query('delete from oauth_states where organization_id=$1 and connection_id=$2', [
+          p.organizationId,
+          id,
+        ]);
+        await sql.query(
+          "update oauth_tokens set status='revoked' where organization_id=$1 and connection_id=$2",
+          [p.organizationId, id],
+        );
         await sql.query(
           'delete from connection_secrets where organization_id=$1 and connection_id=$2',
           [p.organizationId, id],

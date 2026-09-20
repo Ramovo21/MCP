@@ -50,6 +50,23 @@ export function redact(value: unknown, schema?: JsonObject): unknown {
   return value;
 }
 export const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+/** Strip stored credential values even if an upstream echoes them under an unexpected field. */
+export function scrubSecrets(value: unknown, secrets: string[]): unknown {
+  if (typeof value === 'string') {
+    let safe = value;
+    for (const secret of secrets.filter(Boolean)) safe = safe.split(secret).join('[REDACTED]');
+    return safe;
+  }
+  if (Array.isArray(value)) return value.map((v) => scrubSecrets(v, secrets));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        String(scrubSecrets(k, secrets)),
+        scrubSecrets(v, secrets),
+      ]),
+    );
+  return value;
+}
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object')

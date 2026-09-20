@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { audit, type Database, type Sql } from '../../../packages/database/src/index.js';
 import {
   AppError,
+  risks,
   publicError,
   type Principal,
   type ToolRecord,
@@ -18,6 +19,11 @@ import {
 import { validateInput } from '../../../packages/mcp-core/src/validation.js';
 import type { ConnectorWorker } from '../../../services/connector-worker/src/index.js';
 import type { Authenticator } from './auth.js';
+import { classifyFailure } from '../../../packages/shared/src/failures.js';
+import { newTraceId, traceContext } from '../../../packages/shared/src/tracing.js';
+import { scrubSecrets } from '../../../packages/shared/src/secrets.js';
+import type { OAuthService } from './oauth.js';
+import { logger } from '../../../packages/shared/src/logging.js';
 export interface Execution {
   id: string;
   organization_id: string;
@@ -30,6 +36,7 @@ export interface Execution {
   result_metadata: JsonObject | null;
   error_metadata: JsonObject | null;
   started_at: string;
+  trace_id: string;
 }
 export class ExecutionService {
   constructor(
@@ -37,6 +44,7 @@ export class ExecutionService {
     readonly vault: SecretVault,
     private worker: ConnectorWorker,
     readonly auth: Authenticator,
+    private oauth?: OAuthService,
   ) {}
   async resolve(sql: Sql, p: Principal, name: string) {
     const r = await sql.query<
@@ -123,7 +131,9 @@ export class ExecutionService {
           fingerprint,
           idempotencyKey,
           status,
-          failure ? JSON.stringify(publicError(failure)) : null,
+          failure
+            ? JSON.stringify({ ...publicError(failure), ...classifyFailure(failure, 'READ') })
+            : null,
         ],
       );
       if (!r.rows[0]) {
@@ -138,6 +148,13 @@ export class ExecutionService {
         return { execution: other, dispatch: false };
       }
       await this.step(sql, p.organizationId, id, 'authenticated');
+      const traceId = traceContext.getStore()?.traceId ?? newTraceId();
+      await sql.query('update executions set trace_id=$3 where organization_id=$1 and id=$2', [
+        p.organizationId,
+        id,
+        traceId,
+      ]);
+      r.rows[0].trace_id = traceId;
       if (failure)
         await sql.query(
           'update executions set finished_at=now(),duration_ms=0 where organization_id=$1 and id=$2',
@@ -160,6 +177,7 @@ export class ExecutionService {
   response(e: Execution) {
     return {
       executionId: e.id,
+      traceId: e.trace_id,
       status: e.status,
       ...(e.result_metadata ? { result: e.result_metadata } : {}),
       ...(e.error_metadata ? { error: e.error_metadata } : {}),
@@ -167,6 +185,18 @@ export class ExecutionService {
   }
   async dispatch(e: Execution, p: Principal) {
     const started = Date.now();
+    let risk: ToolRecord['risk'] = 'WRITE';
+    const events: { stage: string; metadata: Record<string, unknown> }[] = [];
+    const flushTrace = async () => {
+      if (events.length)
+        await this.db.tenant(p.organizationId, async (sql) => {
+          for (const event of events.splice(0))
+            await this.step(sql, p.organizationId, e.id, event.stage, {
+              ...event.metadata,
+              traceId: e.trace_id,
+            });
+        });
+    };
     try {
       const current = await this.auth.refresh(p);
       const data = await this.db.tenant(p.organizationId, async (sql) => {
@@ -218,13 +248,28 @@ export class ExecutionService {
         `${p.organizationId}:execution:${e.id}`,
       );
       validateInput(data.tool.input_schema, args);
-      const result = await this.worker.dispatch(data.tool, args, {
-        ...data,
-        organizationId: p.organizationId,
-        database: this.db,
-        executionId: e.id,
-        signal: AbortSignal.timeout(30000),
-      });
+      const accessToken = await this.oauth?.accessToken(p.organizationId, data.connection.id);
+      if (accessToken) data.secrets.bearerToken = accessToken;
+      risk =
+        risks[Math.max(risks.indexOf(data.tool.risk), risks.indexOf(data.tool.baseline_risk))]!;
+      const rawResult = await traceContext.run(
+        {
+          traceId: e.trace_id,
+          executionId: e.id,
+          emit: (stage, metadata) => {
+            if (events.length < 50) events.push({ stage, metadata });
+          },
+        },
+        () =>
+          this.worker.dispatch(data.tool, args, {
+            ...data,
+            organizationId: p.organizationId,
+            database: this.db,
+            executionId: e.id,
+            signal: AbortSignal.timeout(30000),
+          }),
+      );
+      const result = scrubSecrets(rawResult, Object.values(data.secrets));
       // Persist metadata only: results can contain provider secrets or personal data.
       const metadata = {
         bytes: Buffer.byteLength(JSON.stringify(result) ?? 'null'),
@@ -232,12 +277,27 @@ export class ExecutionService {
       };
       if (metadata.bytes > 2 * 1024 * 1024)
         throw new AppError('RESPONSE_TOO_LARGE', 'Tool result exceeds 2 MiB');
+      await flushTrace();
       await this.finish(e, p, 'succeeded', metadata, null, Date.now() - started);
-      return { executionId: e.id, status: 'succeeded', result, durationMs: Date.now() - started };
+      return {
+        executionId: e.id,
+        traceId: e.trace_id,
+        status: 'succeeded',
+        result,
+        durationMs: Date.now() - started,
+      };
     } catch (error) {
-      const safe = publicError(error);
-      await this.finish(e, p, 'failed', null, safe, Date.now() - started);
-      return { executionId: e.id, status: 'failed', error: safe, durationMs: Date.now() - started };
+      const safe = { ...publicError(error), ...classifyFailure(error, risk) };
+      const status = safe.outcomeUnknown ? 'unknown' : 'failed';
+      await flushTrace();
+      await this.finish(e, p, status, null, safe, Date.now() - started);
+      return {
+        executionId: e.id,
+        traceId: e.trace_id,
+        status,
+        error: safe,
+        durationMs: Date.now() - started,
+      };
     }
   }
   async finish(
@@ -256,5 +316,15 @@ export class ExecutionService {
       await this.step(sql, p.organizationId, e.id, status);
       await audit(sql, p, `tool.${status}`, e.id);
     });
+    logger.info(
+      {
+        traceId: e.trace_id,
+        executionId: e.id,
+        organizationId: p.organizationId,
+        status,
+        durationMs: duration,
+      },
+      'Execution completed',
+    );
   }
 }

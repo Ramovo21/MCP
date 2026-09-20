@@ -9,6 +9,9 @@ import type { Authenticator } from './auth.js';
 import type { RateLimiter } from './rate-limit.js';
 import type { ConnectionService } from './connections.js';
 import { mountInbound, mountManagement } from './management.js';
+import { newTraceId, traceContext } from '../../../packages/shared/src/tracing.js';
+import type { OAuthService } from './oauth.js';
+import { uuid } from '../../../packages/shared/src/index.js';
 export interface AppServices {
   execution: ExecutionService;
   auth: Authenticator;
@@ -16,12 +19,20 @@ export interface AppServices {
   webOrigin: string;
   hosts: string[];
   connections?: ConnectionService;
+  workerHealth?: () => unknown;
+  oauth?: OAuthService;
 }
 export function createApp(s: AppServices): express.Express {
   const app = express(),
     logger = pino();
   app.disable('x-powered-by');
   app.use(helmet());
+  app.use((_req, res, next) => {
+    const traceId = newTraceId();
+    res.set('X-Trace-Id', traceId);
+    res.set('Cache-Control', 'no-store');
+    traceContext.run({ traceId }, next);
+  });
   app.use((req, res, next) => {
     if (!s.hosts.includes(req.hostname))
       return next(new AppError('INVALID_HOST', 'Host is not allowed', 403));
@@ -52,9 +63,21 @@ export function createApp(s: AppServices): express.Express {
     }),
   );
   app.get('/health', (_req, res) =>
-    res.json({ status: 'ok', service: 'omnimcp', protocol: '2026-07-28' }),
+    res.json({
+      status: 'ok',
+      service: 'omnimcp',
+      protocol: '2026-07-28',
+      worker: s.workerHealth?.(),
+    }),
   );
   if (s.connections) mountInbound(app, s.connections);
+  if (s.oauth)
+    app.get('/oauth/callback/:provider', async (req, res) => {
+      const input = z
+        .object({ state: z.string().min(32).max(200), code: z.string().min(1).max(4000) })
+        .parse(req.query);
+      res.json(await s.oauth!.callback(String(req.params.provider), input.state, input.code));
+    });
   app.use(async (req, res, next) => {
     try {
       const p = await s.auth.authenticate(req.get('authorization'), req.get('x-organization-id'));
@@ -68,6 +91,28 @@ export function createApp(s: AppServices): express.Express {
   app.all('/mcp', async (req, res) => {
     await handleMcp(req, res, res.locals.principal, s.execution);
   });
+  if (s.oauth) {
+    app.post('/api/connections/:id/oauth', async (req, res) => {
+      const input = z
+        .object({
+          provider: z.string().min(1).max(100),
+          scopes: z.array(z.string()).min(1).max(100),
+        })
+        .strict()
+        .parse(req.body);
+      res.json(
+        await s.oauth!.initiate(
+          res.locals.principal,
+          uuid.parse(req.params.id),
+          input.provider,
+          input.scopes,
+        ),
+      );
+    });
+    app.delete('/api/connections/:id/oauth', async (req, res) =>
+      res.json(await s.oauth!.revoke(res.locals.principal, uuid.parse(req.params.id))),
+    );
+  }
   app.get('/api/tools', async (_req, res) =>
     res.json(await s.execution.list(res.locals.principal)),
   );
@@ -92,7 +137,16 @@ export function createApp(s: AppServices): express.Express {
         error instanceof ZodError
           ? new AppError('INVALID_INPUT', 'Request validation failed')
           : error;
-      const status = safe instanceof AppError ? safe.status : 500;
+      const parserStatus =
+        typeof error === 'object' && error && 'type' in error ? error.type : undefined;
+      const status =
+        parserStatus === 'entity.too.large'
+          ? 413
+          : parserStatus === 'entity.parse.failed'
+            ? 400
+            : safe instanceof AppError
+              ? safe.status
+              : 500;
       logger.warn({ code: publicError(safe).code, status }, 'Request rejected');
       if (status === 401) res.set('WWW-Authenticate', 'Bearer realm="OmniMCP"');
       res.status(status).json({ error: publicError(safe) });

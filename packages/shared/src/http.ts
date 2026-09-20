@@ -2,6 +2,7 @@ import { lookup } from 'node:dns/promises';
 import ipaddr from 'ipaddr.js';
 import { Agent, request } from 'undici';
 import { AppError } from './index.js';
+import { traceEvent, upstreamTraceHeaders } from './tracing.js';
 export interface NetworkPolicy {
   privateHosts: readonly string[];
   allowHttp?: boolean;
@@ -91,15 +92,20 @@ export class SafeHttp {
       ...(init.signal ? [init.signal] : []),
     ]);
     try {
+      traceEvent('upstream_started', { protocol: url.protocol, method: init.method ?? 'GET' });
       const response = await request(url, {
         dispatcher: agent,
         method: (init.method ?? 'GET') as 'GET',
-        headers: Object.fromEntries(new Headers(init.headers).entries()),
+        headers: {
+          ...Object.fromEntries(new Headers(init.headers).entries()),
+          ...upstreamTraceHeaders(),
+        },
         body: typeof init.body === 'string' ? init.body : undefined,
         signal,
         headersTimeout: 10000,
         bodyTimeout: 15000,
       });
+      traceEvent('upstream_response', { status: response.statusCode });
       if (response.statusCode >= 300 && response.statusCode < 400) {
         response.body.on('error', () => {});
         response.body.destroy();
@@ -126,14 +132,23 @@ export class SafeHttp {
       });
     } catch (e) {
       if (e instanceof AppError) throw e;
-      throw new AppError('UPSTREAM_ERROR', 'Connector request failed or timed out', 502);
+      throw new AppError(
+        signal.aborted ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE',
+        'Connector request failed',
+        502,
+      );
     } finally {
       await agent.close();
     }
   }
   async json(input: string | URL, init: RequestInit = {}) {
     const r = await this.fetch(input, init);
-    if (!r.ok) throw new AppError('UPSTREAM_ERROR', `Upstream returned HTTP ${r.status}`, 502);
+    if (!r.ok)
+      throw new AppError(
+        r.status === 429 || r.status >= 500 ? 'UPSTREAM_TRANSIENT' : 'UPSTREAM_PERMANENT',
+        `Upstream returned HTTP ${r.status}`,
+        502,
+      );
     if (r.status === 204 || init.method === 'HEAD') return { ok: true, status: r.status };
     try {
       return (await r.json()) as unknown;

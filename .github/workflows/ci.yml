@@ -28,6 +28,7 @@ jobs:
           pnpm env:local
           pnpm db:seed
       - run: pnpm test:live
+      - run: pnpm test:audit
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       - name: Browser verification

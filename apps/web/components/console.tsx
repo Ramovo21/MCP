@@ -899,6 +899,8 @@ export default function Console() {
                   </div>
                   <Json
                     value={{
+                      traceId: detail.trace_id,
+                      requestId: detail.request_id,
                       arguments: detail.arguments_redacted,
                       result: detail.result_metadata,
                       error: detail.error_metadata,

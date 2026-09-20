@@ -1,17 +1,14 @@
 import { PGlite } from '@electric-sql/pglite';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import type { Database, Sql } from '../../packages/database/src/index.js';
 export async function testDatabase(): Promise<Database & { raw: PGlite }> {
   const raw = new PGlite();
   await raw.exec(
     "create schema auth; create role authenticated; create table auth.users(id uuid primary key,email text); create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;",
   );
-  await raw.exec(
-    await readFile(
-      new URL('../../supabase/migrations/202609180001_foundation.sql', import.meta.url),
-      'utf8',
-    ),
-  );
+  const migrations = new URL('../../supabase/migrations/', import.meta.url);
+  for (const file of (await readdir(migrations)).filter((f) => f.endsWith('.sql')).sort())
+    await raw.exec(await readFile(new URL(file, migrations), 'utf8'));
   const wrap = (db: Pick<PGlite, 'query'>): Sql => ({
     async query<T extends Record<string, unknown>>(text: string, values?: unknown[]) {
       const r = await db.query<T>(text, values);

@@ -18,6 +18,8 @@ Use the root README startup sequence. The repository itself is the `omnimcp` mon
 | `CONNECTOR_PRIVATE_HOSTS`                                   | Optional               | Exact deployment-approved private destinations; empty by default                     |
 | `CONNECTOR_INSECURE_PG_HOSTS`                               | Local development only | Exact PostgreSQL hosts allowed without TLS, also requiring private-host allowlisting |
 | `CONNECTOR_MODULES`                                         | Optional               | Comma-separated installed ES module URLs exporting a connector                       |
+| `WORKER_CONCURRENCY`, `WORKER_TIMEOUT_MS`                   | Optional               | Defaults 4 / 30000; max 16 processes and 30 seconds                                  |
+| `OAUTH_PROVIDER_MODULES`, `OAUTH_REDIRECT_BASE`             | Optional               | Deployment-owned provider adapters and registered public Gateway callback origin     |
 | `SEED_EMAIL`, `SEED_PASSWORD`                               | Seed                   | Local account; generated password is unique to checkout                              |
 | `LLM_CHAT_URL`, `LLM_MODEL`, `LLM_API_KEY`                  | Optional               | Compatible chat-completions API used only to propose Playground arguments            |
 
@@ -36,3 +38,7 @@ Use the root README startup sequence. The repository itself is the `omnimcp` mon
 `pnpm dev:gateway` and `pnpm dev:web` run independently. `pnpm build` emits Node code under `dist/` and Next.js output under `apps/web/.next`. Start them with `pnpm start:gateway` and `pnpm --filter @omnimcp/web start`. `pnpm executions:reconcile` performs recovery bookkeeping only.
 
 Fast tests need no Docker. Live/browser tests require local Supabase and the generated environment. Browser tests require both apps already running. They sign in to the real local Auth service; they do not intercept authentication or API responses. Live tests create isolated temporary tenants and PostgreSQL tables and clean up those fixtures without resetting seed data. The browser's normal tool calls remain in the seed organization's execution history.
+
+`pnpm test:audit` starts its own Gateway on port 4100, uses disposable tenant/database fixtures, runs Inspector and local HTTPS REST/MCP upstreams, and writes load measurements to ignored `.local/audit-load.json`. Do not run it against production: it explicitly requires loopback Supabase and database addresses. The audit additionally needs OpenSSL to generate an ephemeral localhost TLS identity (available on Ubuntu CI and auto-detected in Git for Windows; otherwise set `AUDIT_OPENSSL`). Private test keys are generated in the OS temporary directory, cleaned up afterward and never committed. No external credentials or OAuth provider are needed.
+
+Gateway spawns worker processes automatically in both development and production. There is no additional terminal or Docker broker to start. Apply additive migrations with `pnpm db:migrate` when upgrading an existing checkout; `pnpm db:reset` is the explicit destructive alternative.

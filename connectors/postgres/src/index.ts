@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { traceEvent, traceContext } from '../../../packages/shared/src/tracing.js';
 import { z } from 'zod';
 import { AppError, type JsonObject } from '../../../packages/shared/src/index.js';
 import { resolveSafeHost, type NetworkPolicy } from '../../../packages/shared/src/http.js';
@@ -73,6 +74,7 @@ export function postgresConnector(
       );
     const ip = (await resolveSafeHost(url.hostname, policy))[0]!;
     const client = new pg.Client({
+      application_name: `omnimcp/${traceContext.getStore()?.traceId ?? ctx.executionId}`,
       host: ip.address,
       port: Number(url.port || 5432),
       database: decodeURIComponent(url.pathname.slice(1)),
@@ -87,11 +89,16 @@ export function postgresConnector(
           : { rejectUnauthorized: true, servername: url.hostname },
     });
     try {
+      traceEvent('upstream_started', {
+        protocol: 'postgresql',
+        operation: write ? 'write' : 'read',
+      });
       await client.connect();
       await client.query(write ? 'begin' : 'begin read only');
       await client.query("set local statement_timeout='8s'");
       const result = await fn(client);
       await client.query('commit');
+      traceEvent('upstream_response', { protocol: 'postgresql', status: 'succeeded' });
       return result;
     } catch (e) {
       try {

@@ -8,10 +8,10 @@ Schedule `pnpm executions:reconcile` at least every minute on one worker. It exp
 
 ## Known non-blocking V1 limitations
 
-- Connector workers execute in-process; custom modules are trusted deployed code. No distributed job queue, process isolation, or browser automation implementation.
+- Connector jobs execute in disposable Node processes with deadlines, cancellation and bounded concurrency. These processes share the Gateway OS identity and backend database credential: only trusted deployed plugins are supported. There is no distributed queue or sandbox for hostile code. See [worker boundary](worker-boundary.md).
 - No managed vault adapter or automatic master-key rotation is shipped. AES-GCM local encryption is implemented behind a replaceable abstraction.
 - No full SaaS billing, enterprise SSO, invitation-email delivery, or organization deletion flow. Owners add existing Supabase users by UUID; new users create an organization after sign-up.
-- Remote MCP uses independent static bearer credentials and the official SDK. Automated per-provider OAuth consent/refresh is not included. Every imported remote tool starts CRITICAL; metadata cannot reduce risk.
+- Remote MCP uses independent bearer credentials and the official SDK. V1.1 adds a provider-neutral OAuth initiation/callback/encrypted-token/refresh/revocation framework; deployment-specific provider adapters and external consent are not bundled. Every imported remote tool starts CRITICAL; metadata cannot reduce risk.
 - OpenAPI supports 3.0/3.1, local acyclic references, JSON request bodies and ordinary path/query/header parameters. External/cyclic references, cookies, multipart, custom parameter serialization and provider-specific OAuth flows are rejected or require a custom connector. HEAD operations return status metadata; prefer GET for returned data.
 - PostgreSQL supports selected `search`, `get`, and explicitly configured `insert`. The console exposes read selection; inserts require administrator API configuration. Updates/deletes/arbitrary SQL are not provided. Identifiers are limited to conventional alphanumeric/underscore SQL names.
 - UI lists show the latest 100 executions/approvals/audit entries, with 15-second polling. Long-term pagination/export and Realtime subscriptions are future work.

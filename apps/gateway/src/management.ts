@@ -136,7 +136,7 @@ export function mountManagement(
       await db.tenant(p.organizationId, async (sql) => {
         const row = (
           await sql.query(
-            'select id,request_id,tool_name,connector_id,user_id,api_key_id,status,arguments_redacted,started_at,finished_at,duration_ms,result_metadata,error_metadata from executions where organization_id=$1 and id=$2',
+            'select id,request_id,trace_id,tool_name,connector_id,user_id,api_key_id,status,arguments_redacted,started_at,finished_at,duration_ms,result_metadata,error_metadata from executions where organization_id=$1 and id=$2',
             [p.organizationId, id],
           )
         ).rows[0];

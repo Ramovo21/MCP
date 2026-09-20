@@ -3,6 +3,7 @@ import ts from 'typescript-eslint';
 export default ts.config(
   {
     ignores: [
+      '.local/**',
       '**/node_modules/**',
       '**/dist/**',
       '**/.next/**',

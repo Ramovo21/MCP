@@ -1,5 +1,7 @@
 # Verification evidence
 
+This file records the historical V1 checkpoint. The current independent V1.1 results, failures and limitations are in [v1.1-audit-report.md](v1.1-audit-report.md).
+
 Verified locally on **2026-09-19**, using Node **24.18.0**, pnpm **10.32.1**, official MCP server/client/node packages **2.0.0**, Inspector **2.7.0**, and local Supabase CLI **2.117.0** / PostgreSQL **17**.
 
 | Check                      | Observed result                                                                                                     |

@@ -12,11 +12,12 @@ Prerequisites: Node >=22.19, Docker Desktop/Engine running, and pnpm 10.32.1 (`n
 pnpm install --frozen-lockfile
 pnpm db:start
 pnpm env:local
+pnpm db:migrate
 pnpm db:seed
 pnpm dev
 ```
 
-`db:start` applies migrations to a new local Supabase database. To recreate the **local** database, `pnpm db:migrate` runs `supabase db reset`, deleting local data; seed again afterward. Do not use reset against a database whose data you need.
+`db:start` applies migrations to a new local Supabase database. `db:migrate` applies new local migrations without resetting data. The explicitly destructive `pnpm db:reset` recreates the local database; seed again afterward. Do not use reset against a database whose data you need.
 
 - Console: http://localhost:3000/dashboard
 - Gateway health: http://localhost:4000/health
@@ -67,6 +68,7 @@ pnpm test
 pnpm test:integration
 pnpm build
 pnpm test:live               # local Supabase + .env + seed
+pnpm test:audit              # real Gateway/workers + independent connectors + security/load checks
 pnpm exec playwright install chromium
 pnpm test:e2e                # gateway and console running
 ```
@@ -78,7 +80,7 @@ pnpm test:e2e                # gateway and console running
 ```text
 apps/web                   Next.js management console
 apps/gateway               Authenticated REST + Streamable HTTP gateway
-services/connector-worker  Trusted in-process dispatch boundary
+services/connector-worker  Isolated Node process jobs, cancellation, health and durable claims
 packages/mcp-core         Official MCP transport/registry mapping and schema validation
 packages/connector-sdk    Plugin contracts, registration, reserved extension interfaces
 packages/policy-engine    Permission and risk decisions
@@ -93,3 +95,5 @@ docker                    Gateway and web container recipes
 ```
 
 See [architecture](docs/architecture.md), [local development](docs/local-development.md), [connector SDK](docs/connector-sdk.md), [security](docs/security.md), [deployment and limitations](docs/deployment.md), and [verification evidence](docs/verification.md).
+
+V1.1 hardening: [independent audit report](docs/v1.1-audit-report.md), [exact MCP commands](docs/mcp-verification.md), [worker boundary](docs/worker-boundary.md), [execution semantics](docs/execution-semantics.md), and [OAuth adapter framework](docs/oauth.md).

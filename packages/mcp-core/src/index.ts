@@ -51,7 +51,7 @@ export async function handleMcp(
           return {
             content: [{ type: 'text' as const, text: JSON.stringify(outcome) }],
             structuredContent: outcome,
-            isError: ['failed', 'denied', 'rejected'].includes(outcome.status),
+            isError: ['failed', 'denied', 'rejected', 'unknown'].includes(outcome.status),
           };
         } catch (e) {
           return {
