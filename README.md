@@ -1,5 +1,7 @@
 # OmniMCP
 
+V1.2 adds a separate private Worker service, real OpenTelemetry export, and a small Google Workspace READ connector. Public hosting and real Google consent require deployment-specific credentials; local verification does not imply a live Internet deployment. See [staging deployment](docs/staging-deployment.md), [MCP verification](docs/staging-mcp-verification.md), [observability](docs/observability.md) and [V1.2 evidence](docs/v1.2-staging-report.md).
+
 **Universal AI Integration & Action Gateway.** A multi-tenant tool registry, execution gateway, and management console for AI clients. Integrations are plugins; every user-triggered call passes through server-side authorization, policy, durable execution tracking, and human approval when required.
 
 Uses MCP **2026-07-28**, official `@modelcontextprotocol/server`, `@modelcontextprotocol/client` and Node adapter **2.0.0**, Streamable HTTP, Node >=22.19, strict TypeScript, pnpm, Next.js, Tailwind, and Supabase Auth/PostgreSQL/RLS. No browser automation runs in V1.

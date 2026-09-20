@@ -1,6 +1,9 @@
 FROM node:24-alpine AS build
 WORKDIR /app
 RUN npm install -g pnpm@10.32.1
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/web/package.json ./apps/web/package.json
+RUN pnpm install --frozen-lockfile
 COPY . .
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -9,7 +12,7 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 ENV NEXT_PUBLIC_GATEWAY_URL=$NEXT_PUBLIC_GATEWAY_URL
 ENV NEXT_STANDALONE=1
-RUN pnpm install --frozen-lockfile && pnpm --filter @omnimcp/web build
+RUN pnpm --filter @omnimcp/web build
 
 FROM node:24-alpine AS runtime
 WORKDIR /app

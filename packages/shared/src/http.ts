@@ -2,7 +2,8 @@ import { lookup } from 'node:dns/promises';
 import ipaddr from 'ipaddr.js';
 import { Agent, request } from 'undici';
 import { AppError } from './index.js';
-import { traceEvent, upstreamTraceHeaders } from './tracing.js';
+import { traceContext, traceEvent, upstreamTraceHeaders } from './tracing.js';
+import { withSpan } from './telemetry.js';
 export interface NetworkPolicy {
   privateHosts: readonly string[];
   allowHttp?: boolean;
@@ -59,6 +60,11 @@ export class SafeHttp {
     private resolver?: Resolver,
   ) {}
   async fetch(input: string | URL, init: RequestInit = {}): Promise<Response> {
+    return withSpan('upstream.http', { method: init.method ?? 'GET' }, () =>
+      this.fetchBounded(input, init),
+    );
+  }
+  private async fetchBounded(input: string | URL, init: RequestInit): Promise<Response> {
     let url: URL;
     try {
       url = new URL(input);
@@ -106,6 +112,8 @@ export class SafeHttp {
         bodyTimeout: 15000,
       });
       traceEvent('upstream_response', { status: response.statusCode });
+      traceContext.getStore()?.span?.setAttribute('status', response.statusCode);
+      if (response.statusCode >= 400) traceContext.getStore()?.span?.setStatus({ code: 2 });
       if (response.statusCode >= 300 && response.statusCode < 400) {
         response.body.on('error', () => {});
         response.body.destroy();

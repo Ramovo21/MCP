@@ -80,6 +80,11 @@ export default function Console() {
     [org, setOrg] = useState(''),
     [memberships, setMemberships] = useState<{ id: string; name: string }[]>([]),
     [data, setData] = useState<ConsoleData>(),
+    [operations, setOperations] = useState<{
+      environment: string;
+      ready: boolean;
+      worker: { status: string };
+    }>(),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState(''),
@@ -94,6 +99,7 @@ export default function Console() {
   currentOrg.current = org;
   const clearWorkspace = useCallback(() => {
     setData(undefined);
+    setOperations(undefined);
     setDetail(undefined);
     setSelectedTool(undefined);
     setDiscovered(undefined);
@@ -107,6 +113,11 @@ export default function Console() {
     const requestedIdentity = identity.current;
     const result = await api<ConsoleData>(org, '/api/console');
     if (currentOrg.current === org && identity.current === requestedIdentity) setData(result);
+    const health = await api<{ environment: string; ready: boolean; worker: { status: string } }>(
+      org,
+      '/api/operations',
+    );
+    if (currentOrg.current === org && identity.current === requestedIdentity) setOperations(health);
   }, [org]);
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -349,6 +360,15 @@ export default function Console() {
                 WORKSPACE / {section.toUpperCase()}
               </div>
               <h1>{nav.find((n) => n[0] === section)?.[1] ?? 'Overview'}</h1>
+              {operations && (
+                <div className="row">
+                  <Badge>{operations.environment}</Badge>
+                  <span className="muted">
+                    Worker: {operations.worker.status} · Gateway:{' '}
+                    {operations.ready ? 'ready' : 'unavailable'}
+                  </span>
+                </div>
+              )}
               <p>
                 {section === 'dashboard'
                   ? 'A clear view of your AI integration infrastructure.'
@@ -474,16 +494,68 @@ export default function Console() {
                         </div>
                         <h2 className="spacer">{text(c.name)}</h2>
                         <p>
+                          Health: {text(c.health_status)} · Last checked:{' '}
+                          {date(c.health_checked_at)}
+                        </p>
+                        {(c.oauth_provider || c.connector_id === 'google-workspace') && (
+                          <p>
+                            OAuth: {text(c.oauth_status ?? 'not connected')} · Expires:{' '}
+                            {date(c.oauth_expires_at)}
+                          </p>
+                        )}
+                        <p>
                           {text(c.connector_id)} ·{' '}
                           {data.tools.filter((t) => t.connection_id === c.id).length} tools
                         </p>
                         {admin && c.status !== 'revoked' && (
                           <div className="row">
+                            {c.connector_id === 'google-workspace' && (
+                              <>
+                                <button
+                                  onClick={() =>
+                                    void run(async () => {
+                                      const tools = await api<Row[]>(
+                                        org,
+                                        `/api/connections/${c.id}/discover`,
+                                        'POST',
+                                        {},
+                                      );
+                                      const scopes = [
+                                        ...new Set(
+                                          tools.flatMap(
+                                            (t) =>
+                                              ((t.config as Row)
+                                                ?.requiredOAuthScopes as string[]) ?? [],
+                                          ),
+                                        ),
+                                      ];
+                                      const result = await api<{ authorizationUrl: string }>(
+                                        org,
+                                        `/api/connections/${c.id}/oauth`,
+                                        'POST',
+                                        { provider: 'google-workspace', scopes },
+                                      );
+                                      window.location.assign(result.authorizationUrl);
+                                    })
+                                  }
+                                >
+                                  Connect / reconnect Google
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    void mutate(`/api/connections/${c.id}/oauth`, 'DELETE')
+                                  }
+                                >
+                                  Revoke Google access
+                                </button>
+                              </>
+                            )}
                             <button
                               onClick={() =>
                                 void run(async () => {
                                   await api(org, `/api/connections/${c.id}/test`, 'POST', {});
                                   setNotice('Connection test passed.');
+                                  await load();
                                 })
                               }
                             >
@@ -1212,6 +1284,7 @@ function ConnectionForm({
     [spec, setSpec] = useState(''),
     [specUrl, setSpecUrl] = useState(''),
     [busy, setBusy] = useState(false);
+  const [googleServices, setGoogleServices] = useState<string[]>(['gmail']);
   return (
     <section className="panel">
       <h2>Connect a system</h2>
@@ -1238,6 +1311,7 @@ function ConnectionForm({
             config = { namespace, inbound: true, ...(url ? { url } : {}) };
             secrets = { signingSecret: secret };
           }
+          if (type === 'google-workspace') config = { services: googleServices };
           void api(org, '/api/connections', 'POST', { name, connectorId: type, config, secrets })
             .then(() => {
               setSecret('');
@@ -1315,7 +1389,30 @@ function ConnectionForm({
             </label>
           </>
         )}
-        {type !== 'demo-crm' && (
+        {type === 'google-workspace' && (
+          <fieldset>
+            <legend>Read-only Google services</legend>
+            {['gmail', 'drive', 'calendar'].map((service) => (
+              <label key={service}>
+                <input
+                  type="checkbox"
+                  checked={googleServices.includes(service)}
+                  onChange={(e) =>
+                    setGoogleServices((old) =>
+                      e.target.checked ? [...old, service] : old.filter((s) => s !== service),
+                    )
+                  }
+                />
+                {service}
+              </label>
+            ))}
+            <p>
+              Authorize only selected services after saving. Use an account label as the connection
+              name.
+            </p>
+          </fieldset>
+        )}
+        {!['demo-crm', 'google-workspace'].includes(type) && (
           <label>
             {type === 'postgres'
               ? 'PostgreSQL connection URL'

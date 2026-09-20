@@ -6,9 +6,12 @@ export interface OAuthTokens {
   refreshToken?: string;
   expiresAt: number;
   scopes: string[];
+  scopesOmitted?: boolean;
 }
 export interface OAuthProvider {
   id: string;
+  /** Prevent provider credentials from being attached to an unrelated connector. */
+  connectorIds?: readonly string[];
   scopes: readonly string[];
   authorizationUrl(input: {
     state: string;
@@ -53,7 +56,7 @@ export function oauthProvider(
         refresh_token: z.string().optional(),
         token_type: z.string(),
         expires_in: z.number().positive().max(31536000),
-        scope: z.string().default(''),
+        scope: z.string().optional(),
       })
       .parse(response);
     if (token.token_type.toLowerCase() !== 'bearer')
@@ -62,7 +65,8 @@ export function oauthProvider(
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
       expiresAt: Date.now() + token.expires_in * 1000,
-      scopes: token.scope.split(' ').filter(Boolean),
+      scopes: (token.scope ?? '').split(' ').filter(Boolean),
+      scopesOmitted: token.scope === undefined,
     };
   };
   return {

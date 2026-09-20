@@ -11,6 +11,7 @@ import {
 } from '../../../packages/shared/src/index.js';
 import type { SecretVault } from '../../../packages/shared/src/secrets.js';
 import { validateToolSchema } from '../../../packages/mcp-core/src/validation.js';
+import type { OAuthService } from './oauth.js';
 import type {
   ConnectorRegistry,
   ConnectorContext,
@@ -46,6 +47,7 @@ export class ConnectionService {
     readonly db: Database,
     readonly vault: SecretVault,
     readonly registry: ConnectorRegistry,
+    private oauth?: OAuthService,
   ) {}
   async context(p: Principal, id: string): Promise<ConnectorContext> {
     return this.db.tenant(p.organizationId, async (sql) => {
@@ -169,8 +171,41 @@ export class ConnectionService {
     assertAdmin(p);
     const ctx = await this.context(p, id),
       plugin = this.registry.get(ctx.connection.connector_id);
-    if (plugin.test) await plugin.test(ctx);
-    else await plugin.discover(ctx);
+    try {
+      const tools = await plugin.discover(ctx);
+      const required = tools.filter((t) => typeof t.config?.requiredOAuthProvider === 'string');
+      if (required.length) {
+        const provider = String(required[0]!.config!.requiredOAuthProvider);
+        const scopes = [
+          ...new Set(required.flatMap((t) => (t.config!.requiredOAuthScopes as string[]) ?? [])),
+        ];
+        const token = await this.oauth?.accessToken(p.organizationId, id, { provider, scopes });
+        if (!token)
+          throw new AppError('OAUTH_REAUTH_REQUIRED', 'Connect OAuth authorization first', 403);
+        ctx.secrets.bearerToken = token;
+      }
+      if (plugin.test) await plugin.test(ctx);
+      await this.db.tenant(p.organizationId, (sql) =>
+        sql.query(
+          "update connections set health_status='healthy',health_checked_at=now() where organization_id=$1 and id=$2",
+          [p.organizationId, id],
+        ),
+      );
+    } catch (error) {
+      if (
+        error instanceof AppError &&
+        error.code === 'OAUTH_REAUTH_REQUIRED' &&
+        ctx.secrets.bearerToken
+      )
+        await this.oauth?.markReauth(p.organizationId, id, ctx.secrets.bearerToken);
+      await this.db.tenant(p.organizationId, (sql) =>
+        sql.query(
+          "update connections set health_status='failed',health_checked_at=now() where organization_id=$1 and id=$2",
+          [p.organizationId, id],
+        ),
+      );
+      throw error;
+    }
     return { ok: true };
   }
   async update(p: Principal, id: string, status: Connection['status']) {

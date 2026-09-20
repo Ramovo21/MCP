@@ -4,6 +4,7 @@ import { audit } from '../../../packages/database/src/index.js';
 import { AppError, assertAdmin, type Principal } from '../../../packages/shared/src/index.js';
 import { hash, type SecretVault } from '../../../packages/shared/src/secrets.js';
 import type { OAuthProvider, OAuthTokens } from '../../../packages/connector-sdk/src/oauth.js';
+import { googleOAuthProvider } from '../../../connectors/google-workspace/src/oauth.js';
 
 export class OAuthService {
   constructor(
@@ -17,6 +18,28 @@ export class OAuthService {
     if (!provider) throw new AppError('NOT_FOUND', 'OAuth provider is not installed', 404);
     return provider;
   }
+  availableProviders() {
+    return this.providers.map((p) => ({ id: p.id, scopes: p.scopes }));
+  }
+  async markReauth(org: string, connection: string, usedToken: string) {
+    await this.db.tenant(org, async (sql) => {
+      const row = (
+        await sql.query<{ ciphertext: string }>(
+          'select ciphertext from oauth_tokens where organization_id=$1 and connection_id=$2 for update',
+          [org, connection],
+        )
+      ).rows[0];
+      if (
+        row &&
+        this.vault.open<OAuthTokens>(row.ciphertext, `${org}:oauth:${connection}`).accessToken ===
+          usedToken
+      )
+        await sql.query(
+          "update oauth_tokens set status='reauth_required' where organization_id=$1 and connection_id=$2 and status='active'",
+          [org, connection],
+        );
+    });
+  }
   async initiate(p: Principal, connection: string, providerId: string, scopes: string[]) {
     assertAdmin(p);
     const provider = this.provider(providerId);
@@ -27,12 +50,18 @@ export class OAuthService {
     const redirectUri = this.redirectBase + '/oauth/callback/' + encodeURIComponent(providerId);
     await this.db.tenant(p.organizationId, async (sql) => {
       const current = (
-        await sql.query<{ oauth_generation: number }>(
-          "select oauth_generation from connections where organization_id=$1 and id=$2 and status='active'",
+        await sql.query<{ oauth_generation: number; connector_id: string }>(
+          "select oauth_generation,connector_id from connections where organization_id=$1 and id=$2 and status='active'",
           [p.organizationId, connection],
         )
       ).rows[0];
       if (!current) throw new AppError('NOT_FOUND', 'Connection not found', 404);
+      if (provider.connectorIds && !provider.connectorIds.includes(current.connector_id))
+        throw new AppError(
+          'OAUTH_CONNECTOR_MISMATCH',
+          'OAuth provider is not allowed for this connector',
+          403,
+        );
       await sql.query(
         'insert into oauth_states(organization_id,connection_id,state_hash,user_id,provider_id,payload_encrypted) values($1,$2,$3,$4,$5,$6)',
         [
@@ -121,6 +150,7 @@ export class OAuthService {
         502,
       );
     }
+    if (tokens.scopesOmitted) tokens.scopes = payload.scopes;
     if (tokens.scopes.some((s) => !payload.scopes.includes(s)))
       throw new AppError('INVALID_SCOPE', 'Provider granted unexpected scopes');
     await this.db.tenant(org, async (sql) => {
@@ -160,7 +190,11 @@ export class OAuthService {
     });
     return { connected: true };
   }
-  async accessToken(org: string, connection: string): Promise<string | undefined> {
+  async accessToken(
+    org: string,
+    connection: string,
+    required?: { provider: string; scopes: string[] },
+  ): Promise<string | undefined> {
     for (let attempt = 0; attempt < 100; attempt++) {
       const claim = await this.db.tenant(org, async (sql) => {
         const row = (
@@ -169,11 +203,25 @@ export class OAuthService {
             [org, connection],
           )
         ).rows[0];
-        if (!row) return { token: undefined };
+        if (!row) {
+          if (required)
+            throw new AppError('OAUTH_REAUTH_REQUIRED', 'Connect OAuth authorization first', 403);
+          return { token: undefined };
+        }
         if (row.status === 'refreshing') return { waiting: true };
         if (row.status !== 'active')
           throw new AppError('OAUTH_REAUTH_REQUIRED', 'Reconnect OAuth authorization', 403);
         const tokens = this.vault.open<OAuthTokens>(row.ciphertext, `${org}:oauth:${connection}`);
+        if (
+          required &&
+          (required.provider !== row.provider_id ||
+            required.scopes.some((s) => !tokens.scopes.includes(s)))
+        )
+          throw new AppError(
+            'OAUTH_SCOPE_REQUIRED',
+            'Reconnect with the required permissions',
+            403,
+          );
         if (tokens.expiresAt > Date.now() + 30000) return { token: tokens.accessToken };
         if (!tokens.refreshToken)
           throw new AppError('OAUTH_REAUTH_REQUIRED', 'OAuth token expired', 403);
@@ -191,6 +239,7 @@ export class OAuthService {
       const { row, tokens } = claim;
       try {
         const next = await this.provider(row.provider_id).refresh(tokens.refreshToken!);
+        if (next.scopesOmitted) next.scopes = tokens.scopes;
         if (next.scopes.some((s) => !tokens.scopes.includes(s)))
           throw new Error('Scope escalation');
         next.refreshToken ??= tokens.refreshToken;
@@ -280,6 +329,13 @@ export class OAuthService {
 }
 export async function loadOAuthProviders(): Promise<OAuthProvider[]> {
   const providers: OAuthProvider[] = [];
+  if (process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_SECRET)
+    providers.push(
+      googleOAuthProvider(
+        process.env.GOOGLE_CLIENT_ID ?? '',
+        process.env.GOOGLE_CLIENT_SECRET ?? '',
+      ),
+    );
   for (const url of (process.env.OAUTH_PROVIDER_MODULES ?? '').split(',').filter(Boolean))
     providers.push(((await import(url)) as { default: OAuthProvider }).default);
   return providers;

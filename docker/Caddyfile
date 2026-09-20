@@ -1,0 +1,12 @@
+{
+  email {$ACME_EMAIL}
+}
+{$WEB_DOMAIN} {
+  reverse_proxy web:3000
+}
+{$GATEWAY_DOMAIN} {
+  # Access logs intentionally disabled: OAuth query strings contain authorization codes.
+  reverse_proxy gateway:4000 {
+    flush_interval -1
+  }
+}

@@ -22,6 +22,12 @@ export class PostgresDatabase implements Database {
       idleTimeoutMillis: 30000,
     });
     this.system = this.pool;
+    // Idle clients can fail during a database restart. Consume the pool error without
+    // printing driver messages (which may contain connection strings); later queries retry
+    // by acquiring a fresh connection. Individual in-flight queries still fail normally.
+    this.pool.on('error', () => {
+      process.stderr.write('{"level":"warn","code":"DATABASE_IDLE_CONNECTION_LOST"}\n');
+    });
   }
   async tenant<T>(organizationId: string, fn: (sql: Sql) => Promise<T>): Promise<T> {
     const c = await this.pool.connect();

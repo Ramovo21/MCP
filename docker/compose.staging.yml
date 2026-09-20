@@ -1,0 +1,106 @@
+name: omnimcp-staging
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    environment:
+      APP_ENV: ${APP_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL:?Set Supabase cloud database URL}
+      MASTER_KEY: ${MASTER_KEY:?Set encryption master key}
+      SUPABASE_URL: ${SUPABASE_URL:?Set Supabase cloud URL}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?Set publishable/anon key}
+      WEB_ORIGIN: https://${WEB_DOMAIN:?Set dashboard domain}
+      OAUTH_REDIRECT_BASE: https://${GATEWAY_DOMAIN:?Set gateway domain}
+      GATEWAY_HOSTS: ${GATEWAY_DOMAIN},gateway,localhost
+      WORKER_URL: http://worker:4100
+      WORKER_AUTH_TOKEN: ${WORKER_AUTH_TOKEN:?Set private worker token}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://telemetry:4318/v1/traces
+    depends_on:
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://localhost:4000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 20s
+      timeout: 8s
+      start_period: 30s
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    command: [node, dist/services/connector-worker/src/main.js]
+    environment:
+      APP_ENV: ${APP_ENV:-staging}
+      DATABASE_URL: ${DATABASE_URL:?Set Supabase cloud database URL}
+      WORKER_AUTH_TOKEN: ${WORKER_AUTH_TOKEN:?Set private worker token}
+      WORKER_CONCURRENCY: 4
+      WORKER_TIMEOUT_MS: 30000
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://telemetry:4318/v1/traces
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://localhost:4100/ready',{headers:{authorization:'Bearer '+process.env.WORKER_AUTH_TOKEN}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 20s
+      timeout: 8s
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_GATEWAY_URL: https://${GATEWAY_DOMAIN}
+    restart: unless-stopped
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  edge:
+    image: caddy:2.10.2-alpine
+    environment:
+      WEB_DOMAIN: ${WEB_DOMAIN}
+      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set certificate contact email}
+    ports: ['80:80', '443:443']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web, gateway]
+    restart: unless-stopped
+  telemetry:
+    image: otel/opentelemetry-collector-contrib:0.123.0
+    command: ['--config=/etc/otelcol/config.yaml']
+    volumes: ['./otel-collector.yaml:/etc/otelcol/config.yaml:ro']
+    depends_on: [traces]
+    restart: unless-stopped
+  traces:
+    image: jaegertracing/jaeger:2.4.0
+    ports: ['127.0.0.1:16686:16686']
+    restart: unless-stopped
+volumes:
+  caddy_data:
+  caddy_config:

@@ -61,5 +61,5 @@ try {
     process.stdout.write(`Official Inspector ${method}: passed against ${endpoint}\n`);
   }
 } finally {
-  await client.auth.signOut();
+  await client.auth.signOut({ scope: 'local' });
 }

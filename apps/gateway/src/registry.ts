@@ -5,6 +5,7 @@ import { openApiConnector } from '../../../connectors/openapi/src/index.js';
 import { postgresConnector } from '../../../connectors/postgres/src/index.js';
 import { remoteMcpConnector } from '../../../connectors/remote-mcp/src/index.js';
 import { webhookConnector } from '../../../connectors/webhook/src/index.js';
+import { googleWorkspaceConnector } from '../../../connectors/google-workspace/src/index.js';
 export async function loadRegistry() {
   const policy = {
       insecurePgHosts: (process.env.CONNECTOR_INSECURE_PG_HOSTS ?? '').split(',').filter(Boolean),
@@ -13,6 +14,7 @@ export async function loadRegistry() {
     http = new SafeHttp(policy);
   const registry = new ConnectorRegistry()
     .register(demoCrm)
+    .register(googleWorkspaceConnector(http))
     .register(openApiConnector(http))
     .register(postgresConnector(policy))
     .register(remoteMcpConnector(http))

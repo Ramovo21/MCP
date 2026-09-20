@@ -30,12 +30,20 @@
     "test:inspector": "vitest run tests/integration/mcp.test.ts",
     "start:gateway": "node --env-file-if-exists=.env dist/apps/gateway/src/main.js",
     "executions:reconcile": "tsx --env-file-if-exists=.env scripts/reconcile.ts",
-    "test:inspector:live": "tsx --env-file-if-exists=.env scripts/inspector-live.ts"
+    "test:inspector:live": "tsx --env-file-if-exists=.env scripts/inspector-live.ts",
+    "dev:worker": "tsx watch --env-file-if-exists=.env services/connector-worker/src/main.ts",
+    "start:worker": "node --env-file-if-exists=.env dist/services/connector-worker/src/main.js",
+    "test:staging:local": "tsx --env-file-if-exists=.env scripts/staging-local-proof.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.0.0",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
+    "@opentelemetry/sdk-trace-node": "^2.11.0",
     "@supabase/supabase-js": "^2.57.4",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",

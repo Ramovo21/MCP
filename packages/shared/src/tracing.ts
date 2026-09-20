@@ -1,8 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
+import type { Span } from '@opentelemetry/api';
+import { safeAttributes } from './telemetry.js';
 
 export interface TraceContext {
   traceId: string;
+  spanId?: string;
+  span?: Span;
   executionId?: string;
   emit?: (stage: string, metadata: Record<string, unknown>) => void;
 }
@@ -25,6 +29,8 @@ export function setTraceExporter(value: TraceExporter) {
 export function traceEvent(stage: string, metadata: Record<string, unknown> = {}) {
   const context = traceContext.getStore();
   if (!context) return;
+  metadata = safeAttributes(metadata);
+  context.span?.addEvent(stage, metadata as Record<string, string | number | boolean>);
   context.emit?.(stage, metadata);
   exporter?.emit({
     traceId: context.traceId,
@@ -37,6 +43,8 @@ export function traceEvent(stage: string, metadata: Record<string, unknown> = {}
 export function upstreamTraceHeaders() {
   const context = traceContext.getStore();
   return context
-    ? { traceparent: `00-${context.traceId}-${randomBytes(8).toString('hex')}-01` }
+    ? {
+        traceparent: `00-${context.traceId}-${context.spanId ?? randomBytes(8).toString('hex')}-01`,
+      }
     : {};
 }

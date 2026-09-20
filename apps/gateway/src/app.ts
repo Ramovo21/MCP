@@ -9,7 +9,8 @@ import type { Authenticator } from './auth.js';
 import type { RateLimiter } from './rate-limit.js';
 import type { ConnectionService } from './connections.js';
 import { mountInbound, mountManagement } from './management.js';
-import { newTraceId, traceContext } from '../../../packages/shared/src/tracing.js';
+import { traceContext } from '../../../packages/shared/src/tracing.js';
+import { beginSpan, withSpan } from '../../../packages/shared/src/telemetry.js';
 import type { OAuthService } from './oauth.js';
 import { uuid } from '../../../packages/shared/src/index.js';
 export interface AppServices {
@@ -20,6 +21,7 @@ export interface AppServices {
   hosts: string[];
   connections?: ConnectionService;
   workerHealth?: () => unknown;
+  ready?: () => Promise<void>;
   oauth?: OAuthService;
 }
 export function createApp(s: AppServices): express.Express {
@@ -28,10 +30,16 @@ export function createApp(s: AppServices): express.Express {
   app.disable('x-powered-by');
   app.use(helmet());
   app.use((_req, res, next) => {
-    const traceId = newTraceId();
-    res.set('X-Trace-Id', traceId);
+    const { span, context } = beginSpan(_req.path === '/mcp' ? 'mcp.request' : 'gateway.request', {
+      method: _req.method,
+    });
+    res.set('X-Trace-Id', context.traceId);
     res.set('Cache-Control', 'no-store');
-    traceContext.run({ traceId }, next);
+    res.once('close', () => {
+      span.setAttribute('status', res.statusCode);
+      span.end();
+    });
+    traceContext.run(context, next);
   });
   app.use((req, res, next) => {
     if (!s.hosts.includes(req.hostname))
@@ -71,16 +79,34 @@ export function createApp(s: AppServices): express.Express {
     }),
   );
   if (s.connections) mountInbound(app, s.connections);
+  app.get('/ready', async (_req, res) => {
+    try {
+      if (!s.ready) {
+        res.status(503).json({ status: 'unconfigured' });
+        return;
+      }
+      await s.ready();
+      res.json({ status: 'ok' });
+    } catch {
+      res.status(503).json({ status: 'unavailable' });
+    }
+  });
   if (s.oauth)
     app.get('/oauth/callback/:provider', async (req, res) => {
       const input = z
         .object({ state: z.string().min(32).max(200), code: z.string().min(1).max(4000) })
         .parse(req.query);
-      res.json(await s.oauth!.callback(String(req.params.provider), input.state, input.code));
+      const result = await s.oauth!.callback(String(req.params.provider), input.state, input.code);
+      if (req.get('accept')?.includes('text/html'))
+        res.redirect(303, new URL('/connections', s.webOrigin).href);
+      else res.json(result);
     });
   app.use(async (req, res, next) => {
     try {
-      const p = await s.auth.authenticate(req.get('authorization'), req.get('x-organization-id'));
+      const p = await withSpan('gateway.authentication', {}, () =>
+        s.auth.authenticate(req.get('authorization'), req.get('x-organization-id')),
+      );
+      traceContext.getStore()?.span?.setAttribute('organizationId', p.organizationId);
       await s.rateLimiter.consume(`${p.organizationId}:${p.apiKeyId ?? p.userId}`);
       res.locals.principal = p;
       next();
@@ -92,6 +118,7 @@ export function createApp(s: AppServices): express.Express {
     await handleMcp(req, res, res.locals.principal, s.execution);
   });
   if (s.oauth) {
+    app.get('/api/oauth/providers', (_req, res) => res.json(s.oauth!.availableProviders()));
     app.post('/api/connections/:id/oauth', async (req, res) => {
       const input = z
         .object({
@@ -113,6 +140,20 @@ export function createApp(s: AppServices): express.Express {
       res.json(await s.oauth!.revoke(res.locals.principal, uuid.parse(req.params.id))),
     );
   }
+  app.get('/api/operations', async (_req, res) => {
+    let ready = false;
+    try {
+      await s.ready?.();
+      ready = Boolean(s.ready);
+    } catch {
+      /* dependency state only */
+    }
+    res.json({
+      environment: process.env.APP_ENV ?? 'development',
+      ready,
+      worker: s.workerHealth?.() ?? { status: 'unconfigured' },
+    });
+  });
   app.get('/api/tools', async (_req, res) =>
     res.json(await s.execution.list(res.locals.principal)),
   );
