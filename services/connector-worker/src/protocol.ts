@@ -4,6 +4,7 @@ export interface ExecutionJob {
   operation: 'catalog' | 'execute' | 'discover' | 'initialize' | 'test' | 'schema';
   executionId: string;
   traceId: string;
+  parentSpanId?: string;
   organizationId?: string;
   connection?: Connection;
   secrets?: Record<string, string>;

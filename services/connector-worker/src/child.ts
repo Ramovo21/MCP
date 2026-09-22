@@ -5,6 +5,13 @@ import { traceContext, traceEvent } from '../../../packages/shared/src/tracing.j
 import { scrubSecrets } from '../../../packages/shared/src/secrets.js';
 import type { ConnectorContext } from '../../../packages/connector-sdk/src/index.js';
 import type { ExecutionJob, WorkerMessage } from './protocol.js';
+import {
+  initializeTelemetry,
+  shutdownTelemetry,
+  withSpan,
+} from '../../../packages/shared/src/telemetry.js';
+
+initializeTelemetry('omnimcp-connector');
 
 function send(message: WorkerMessage) {
   process.send?.(message);
@@ -17,6 +24,7 @@ process.once('message', async (job: ExecutionJob) => {
     const result = await traceContext.run(
       {
         traceId: job.traceId,
+        spanId: job.parentSpanId,
         executionId: job.executionId,
         emit: (stage, metadata) => send({ type: 'trace', stage, metadata }),
       },
@@ -56,7 +64,16 @@ process.once('message', async (job: ExecutionJob) => {
           if (!claim.rows.length)
             throw new AppError('ALREADY_CLAIMED', 'Execution job already claimed', 409);
           traceEvent('connector_started', { connector: connector.id });
-          return connector.execute(job.tool, job.arguments ?? {}, ctx);
+          return withSpan(
+            'connector.execute',
+            {
+              connector: connector.id,
+              tool: job.tool.name,
+              organizationId: job.organizationId,
+              executionId: job.executionId,
+            },
+            () => connector.execute(job.tool!, job.arguments ?? {}, ctx),
+          );
         }
         if (job.operation === 'discover') return connector.discover(ctx);
         if (job.operation === 'initialize') {
@@ -90,6 +107,7 @@ process.once('message', async (job: ExecutionJob) => {
     });
   } finally {
     await db?.close();
+    await shutdownTelemetry();
     process.disconnect?.();
   }
 });

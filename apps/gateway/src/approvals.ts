@@ -1,9 +1,16 @@
 import { audit } from '../../../packages/database/src/index.js';
 import { AppError, assertAdmin, type Principal } from '../../../packages/shared/src/index.js';
 import type { ExecutionService, Execution } from './execution.js';
+import { withSpan } from '../../../packages/shared/src/telemetry.js';
+import { traceContext } from '../../../packages/shared/src/tracing.js';
 export class ApprovalService {
   constructor(private execution: ExecutionService) {}
   async decide(p: Principal, id: string, decision: 'approved' | 'rejected') {
+    return withSpan('gateway.approval', { organizationId: p.organizationId, decision }, () =>
+      this.decideOnce(p, id, decision),
+    );
+  }
+  private async decideOnce(p: Principal, id: string, decision: 'approved' | 'rejected') {
     assertAdmin(p);
     const e = await this.execution.db.tenant(p.organizationId, async (sql) => {
       const approval = (
@@ -60,6 +67,10 @@ export class ApprovalService {
       await audit(sql, p, `approval.${decision}`, id);
       return { ...execution, status };
     });
+    const span = traceContext.getStore()?.span;
+    span?.setAttribute('executionId', e.id);
+    if (e.parent_span_id)
+      span?.addLink({ context: { traceId: e.trace_id, spanId: e.parent_span_id, traceFlags: 1 } });
     if (e.status === 'running') return this.execution.dispatch(e, e.principal);
     return this.execution.response(e);
   }

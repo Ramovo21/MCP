@@ -87,6 +87,8 @@ export class ProcessExecutor implements WorkerExecutor {
       CONNECTOR_PRIVATE_HOSTS: process.env.CONNECTOR_PRIVATE_HOSTS,
       CONNECTOR_INSECURE_PG_HOSTS: process.env.CONNECTOR_INSECURE_PG_HOSTS,
       CONNECTOR_MODULES: process.env.CONNECTOR_MODULES,
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+      APP_ENV: process.env.APP_ENV,
       ...this.options.env,
     };
     const child = fork(path, [], {
@@ -174,6 +176,7 @@ export async function processRegistry(executor: WorkerExecutor) {
           operation,
           executionId: ctx.executionId,
           traceId: traceContext.getStore()?.traceId ?? newTraceId(),
+          parentSpanId: traceContext.getStore()?.spanId,
           organizationId: ctx.organizationId,
           connection: ctx.connection,
           secrets: ctx.secrets,

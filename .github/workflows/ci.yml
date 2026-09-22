@@ -10,6 +10,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 10.32.1
@@ -18,6 +20,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: node scripts/scan-secrets.mjs
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
@@ -30,6 +33,10 @@ jobs:
       - run: pnpm test:live
       - run: pnpm test:audit
       - run: pnpm build
+      - name: Separate worker and real OTLP recovery proof
+        run: |
+          docker compose -f docker/compose.telemetry.yml up -d
+          pnpm test:staging:local
       - run: pnpm exec playwright install --with-deps chromium
       - name: Browser verification
         run: |
@@ -43,3 +50,6 @@ jobs:
       - name: Stop local Supabase
         if: always()
         run: pnpm exec supabase stop --no-backup > /tmp/omnimcp-supabase-stop.log 2>&1
+      - name: Stop telemetry
+        if: always()
+        run: docker compose -f docker/compose.telemetry.yml down

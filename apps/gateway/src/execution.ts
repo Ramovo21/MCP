@@ -24,6 +24,7 @@ import { newTraceId, traceContext } from '../../../packages/shared/src/tracing.j
 import { scrubSecrets } from '../../../packages/shared/src/secrets.js';
 import type { OAuthService } from './oauth.js';
 import { logger } from '../../../packages/shared/src/logging.js';
+import { withSpan } from '../../../packages/shared/src/telemetry.js';
 export interface Execution {
   id: string;
   organization_id: string;
@@ -37,6 +38,7 @@ export interface Execution {
   error_metadata: JsonObject | null;
   started_at: string;
   trace_id: string;
+  parent_span_id?: string;
 }
 export class ExecutionService {
   constructor(
@@ -107,7 +109,11 @@ export class ExecutionService {
       try {
         tool = await this.resolve(sql, p, name);
         validateInput(tool.input_schema, args);
-        decision = evaluate(tool, await this.policy(sql, p.organizationId));
+        decision = await withSpan(
+          'gateway.policy',
+          { organizationId: p.organizationId, tool: name, risk: tool.risk },
+          async () => evaluate(tool!, await this.policy(sql, p.organizationId)),
+        );
       } catch (e) {
         failure = e;
       }
@@ -149,12 +155,12 @@ export class ExecutionService {
       }
       await this.step(sql, p.organizationId, id, 'authenticated');
       const traceId = traceContext.getStore()?.traceId ?? newTraceId();
-      await sql.query('update executions set trace_id=$3 where organization_id=$1 and id=$2', [
-        p.organizationId,
-        id,
-        traceId,
-      ]);
+      await sql.query(
+        'update executions set trace_id=$3,parent_span_id=$4 where organization_id=$1 and id=$2',
+        [p.organizationId, id, traceId, traceContext.getStore()?.spanId ?? null],
+      );
       r.rows[0].trace_id = traceId;
+      r.rows[0].parent_span_id = traceContext.getStore()?.spanId;
       if (failure)
         await sql.query(
           'update executions set finished_at=now(),duration_ms=0 where organization_id=$1 and id=$2',
@@ -186,6 +192,7 @@ export class ExecutionService {
   async dispatch(e: Execution, p: Principal) {
     const started = Date.now();
     let risk: ToolRecord['risk'] = 'WRITE';
+    let oauthConnection: string | undefined, usedToken: string | undefined;
     const events: { stage: string; metadata: Record<string, unknown> }[] = [];
     const flushTrace = async () => {
       if (events.length)
@@ -248,26 +255,60 @@ export class ExecutionService {
         `${p.organizationId}:execution:${e.id}`,
       );
       validateInput(data.tool.input_schema, args);
-      const accessToken = await this.oauth?.accessToken(p.organizationId, data.connection.id);
+      const required =
+        typeof data.tool.config.requiredOAuthProvider === 'string'
+          ? {
+              provider: data.tool.config.requiredOAuthProvider,
+              scopes: Array.isArray(data.tool.config.requiredOAuthScopes)
+                ? data.tool.config.requiredOAuthScopes.filter(
+                    (s): s is string => typeof s === 'string',
+                  )
+                : [],
+            }
+          : undefined;
+      if (required && !this.oauth)
+        throw new AppError('OAUTH_REAUTH_REQUIRED', 'OAuth is not configured', 403);
+      const accessToken = await this.oauth?.accessToken(
+        p.organizationId,
+        data.connection.id,
+        required,
+      );
       if (accessToken) data.secrets.bearerToken = accessToken;
+      oauthConnection = data.connection.id;
+      usedToken = accessToken;
       risk =
         risks[Math.max(risks.indexOf(data.tool.risk), risks.indexOf(data.tool.baseline_risk))]!;
       const rawResult = await traceContext.run(
         {
+          ...traceContext.getStore(),
           traceId: e.trace_id,
+          spanId:
+            traceContext.getStore()?.traceId === e.trace_id
+              ? traceContext.getStore()?.spanId
+              : e.parent_span_id,
           executionId: e.id,
           emit: (stage, metadata) => {
             if (events.length < 50) events.push({ stage, metadata });
           },
         },
         () =>
-          this.worker.dispatch(data.tool, args, {
-            ...data,
-            organizationId: p.organizationId,
-            database: this.db,
-            executionId: e.id,
-            signal: AbortSignal.timeout(30000),
-          }),
+          withSpan(
+            'gateway.dispatch',
+            {
+              organizationId: p.organizationId,
+              connector: data.connection.connector_id,
+              tool: data.tool.name,
+              executionId: e.id,
+            },
+            () =>
+              this.worker.dispatch(data.tool, args, {
+                ...data,
+                organizationId: p.organizationId,
+                database: this.db,
+                executionId: e.id,
+                signal: AbortSignal.timeout(30000),
+              }),
+          ),
       );
       const result = scrubSecrets(rawResult, Object.values(data.secrets));
       // Persist metadata only: results can contain provider secrets or personal data.
@@ -287,6 +328,13 @@ export class ExecutionService {
         durationMs: Date.now() - started,
       };
     } catch (error) {
+      if (
+        error instanceof AppError &&
+        error.code === 'OAUTH_REAUTH_REQUIRED' &&
+        oauthConnection &&
+        usedToken
+      )
+        await this.oauth?.markReauth(p.organizationId, oauthConnection, usedToken);
       const safe = { ...publicError(error), ...classifyFailure(error, risk) };
       const status = safe.outcomeUnknown ? 'unknown' : 'failed';
       await flushTrace();

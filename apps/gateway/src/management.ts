@@ -89,7 +89,7 @@ export function mountManagement(
         features: { naturalLanguage: llmConfigured() },
         connectors: connections.registry.list(),
         connections: await query(
-          'select id,name,connector_id,status,created_at from connections where organization_id=$1 order by created_at desc',
+          'select c.id,c.name,c.connector_id,c.status,c.created_at,c.health_status,c.health_checked_at,o.status oauth_status,o.provider_id oauth_provider,o.scopes oauth_scopes,o.expires_at oauth_expires_at from connections c left join oauth_tokens o on o.organization_id=c.organization_id and o.connection_id=c.id where c.organization_id=$1 order by c.created_at desc',
         ),
         tools: admin
           ? await query(
@@ -102,7 +102,7 @@ export function mountManagement(
           )
         )[0],
         executions: await query(
-          'select id,tool_name,connector_id,status,arguments_redacted,started_at,duration_ms,result_metadata,error_metadata from executions where organization_id=$1 order by started_at desc limit 100',
+          'select id,trace_id,tool_name,connector_id,status,arguments_redacted,started_at,duration_ms,result_metadata,error_metadata from executions where organization_id=$1 order by started_at desc limit 100',
         ),
         approvals: admin
           ? await query(
