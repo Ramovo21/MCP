@@ -11,6 +11,7 @@ import {
 } from '../../../packages/shared/src/index.js';
 import type { SecretVault } from '../../../packages/shared/src/secrets.js';
 import { validateToolSchema } from '../../../packages/mcp-core/src/validation.js';
+import { validateDefinitions } from '../../../packages/connector-sdk/src/contract.js';
 import type { OAuthService } from './oauth.js';
 import type {
   ConnectorRegistry,
@@ -116,6 +117,7 @@ export class ConnectionService {
     assertAdmin(p);
     const ctx = await this.context(p, id),
       definitions = await this.registry.get(ctx.connection.connector_id).discover(ctx);
+    validateDefinitions(definitions);
     if (definitions.length > 500)
       throw new AppError('TOO_MANY_TOOLS', 'Connection tool limit is 500');
     const tools = definitions.map(({ execute: _handler, ...t }) => ({

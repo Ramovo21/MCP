@@ -1,18 +1,16 @@
 import 'dotenv/config';
 import { gatewayConfig } from '../../../packages/shared/src/config.js';
-import { hydrateSecrets } from '../../../packages/shared/src/secret-provider.js';
+import {
+  hydrateSecrets,
+  EnvironmentSecretProvider,
+} from '../../../packages/shared/src/secret-provider.js';
 import { HttpWorkerExecutor } from '../../../services/connector-worker/src/http.js';
 import { initializeTelemetry, shutdownTelemetry } from '../../../packages/shared/src/telemetry.js';
 import { PostgresDatabase } from '../../../packages/database/src/index.js';
 import { AesGcmVault } from '../../../packages/shared/src/secrets.js';
-import {
-  ProcessExecutor,
-  processRegistry,
-} from '../../../services/connector-worker/src/process.js';
-import { ConnectionService } from './connections.js';
-import { ConnectorWorker } from '../../../services/connector-worker/src/index.js';
-import { Authenticator, supabaseVerifier } from './auth.js';
-import { ExecutionService } from './execution.js';
+import { ProcessExecutor } from '../../../services/connector-worker/src/process.js';
+import { SupabaseAuthProvider } from './auth.js';
+import { createOmniMCP } from './framework.js';
 import { PostgresRateLimiter } from './rate-limit.js';
 import { createApp } from './app.js';
 import { OAuthService, loadOAuthProviders } from './oauth.js';
@@ -27,15 +25,19 @@ const db = new PostgresDatabase(env.DATABASE_URL),
         databaseUrl: env.DATABASE_URL,
         concurrency: env.WORKER_CONCURRENCY,
         timeoutMs: env.WORKER_TIMEOUT_MS,
-      }),
-  registry = await processRegistry(processExecutor);
+      });
 const oauth = new OAuthService(db, vault, await loadOAuthProviders(), env.OAUTH_REDIRECT_BASE);
-const auth = new Authenticator(db, supabaseVerifier(env.SUPABASE_URL, env.SUPABASE_ANON_KEY)),
-  execution = new ExecutionService(db, vault, new ConnectorWorker(registry), auth, oauth);
+const { auth, execution, connections } = await createOmniMCP({
+  database: db,
+  worker: processExecutor,
+  oauth,
+  secretProvider: new EnvironmentSecretProvider(),
+  authProvider: new SupabaseAuthProvider(env.SUPABASE_URL, env.SUPABASE_ANON_KEY),
+});
 const app = createApp({
   execution,
   auth,
-  connections: new ConnectionService(db, vault, registry, oauth),
+  connections,
   rateLimiter: new PostgresRateLimiter(db),
   webOrigin: env.WEB_ORIGIN,
   hosts: env.GATEWAY_HOSTS.split(','),

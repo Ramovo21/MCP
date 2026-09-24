@@ -3,6 +3,7 @@ packages:
   - services/*
   - packages/*
   - connectors/*
+  - examples/*
 onlyBuiltDependencies:
   - esbuild
   - sharp

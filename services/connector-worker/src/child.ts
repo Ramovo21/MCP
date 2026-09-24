@@ -4,6 +4,10 @@ import { loadRegistry } from '../../../apps/gateway/src/registry.js';
 import { traceContext, traceEvent } from '../../../packages/shared/src/tracing.js';
 import { scrubSecrets } from '../../../packages/shared/src/secrets.js';
 import type { ConnectorContext } from '../../../packages/connector-sdk/src/index.js';
+import {
+  executeConnector,
+  validateDefinitions,
+} from '../../../packages/connector-sdk/src/contract.js';
 import type { ExecutionJob, WorkerMessage } from './protocol.js';
 import {
   initializeTelemetry,
@@ -72,10 +76,14 @@ process.once('message', async (job: ExecutionJob) => {
               organizationId: job.organizationId,
               executionId: job.executionId,
             },
-            () => connector.execute(job.tool!, job.arguments ?? {}, ctx),
+            () => executeConnector(connector, job.tool!, job.arguments ?? {}, ctx),
           );
         }
-        if (job.operation === 'discover') return connector.discover(ctx);
+        if (job.operation === 'discover') {
+          const definitions = await connector.discover(ctx);
+          validateDefinitions(definitions);
+          return definitions;
+        }
         if (job.operation === 'initialize') {
           await connector.initialize?.(ctx);
           return { ok: true };

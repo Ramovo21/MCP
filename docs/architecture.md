@@ -29,3 +29,32 @@ External side effects and PostgreSQL commits are not a distributed transaction. 
 V1.1 runs each connector job in a separate disposable Node process. Gateway owns authentication, policy and the durable execution record; the worker atomically claims dispatch and returns a bounded result or sanitized error. `WorkerExecutor` allows a future queue/container transport without changing connectors. Modules remain deployment-trusted code: process isolation is not a hostile-plugin sandbox. See [worker boundary](worker-boundary.md) for limits and [OAuth](oauth.md) for the provider-neutral credential lifecycle. Browser automation has a reserved SDK interface but no implementation or registry entry.
 
 The console polls every 15 seconds for approval/execution changes. Supabase Realtime is deliberately not required by the correctness model; no public changefeed includes credential or argument ciphertext.
+
+## V1.3 composition boundaries
+
+`createOmniMCP` is shared by the production entry and example. `AuthProvider`
+verifies identity; `TenantResolver` verifies membership/API keys and refreshes the
+original actor before dispatch. `SupabaseAuthProvider` and `PostgresTenantResolver`
+preserve the existing default behavior.
+
+`ExecutionService` and `ApprovalService` use semantic `ExecutionTransaction`
+operations. SQL moved into `PostgresExecutionStore`; its injected
+`PostgresAuditStore` participates in the same database transaction. Audit failure
+rolls back the execution instead of leaving an unaudited runnable action.
+Approval locks and idempotency uniqueness remain database guarantees.
+The management `policy(Sql,org)` method remains a compatibility adapter.
+
+MCP core imports neither Supabase nor PostgreSQL. It receives a dispatcher and
+verified principal, retains protocol capability errors, and forwards request
+cancellation to execution/worker signals. A timeout cannot undo an upstream write.
+
+Each real child worker validates connector discovery metadata, registry-operation
+binding, input and optional output schema, risk baseline, abort/deadline and JSON
+response size. Credential scrubbing and safe error codes apply at this boundary.
+Connector discovery can perform an additional read before execution; account for
+that latency and upstream availability when writing connectors.
+
+Alternative stores must implement atomic transitions, rollback and transactional
+audit, plus a compatible worker claim adapter. Default management/OAuth/rate-limit
+services and child-worker claims still use PostgreSQL; interfaces do not imply
+that a complete alternative SaaS backend has been implemented.

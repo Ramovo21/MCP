@@ -1,4 +1,8 @@
-import { createMcpHandler, Server } from '@modelcontextprotocol/server';
+import {
+  createMcpHandler,
+  Server,
+  MissingRequiredClientCapabilityError,
+} from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { Request, Response } from 'express';
 import {
@@ -14,6 +18,7 @@ export interface GatewayDispatcher {
     name: string,
     args: JsonObject,
     key?: string,
+    signal?: AbortSignal,
   ): Promise<{ status: string; [key: string]: unknown }>;
 }
 export async function handleMcp(
@@ -40,13 +45,14 @@ export async function handleMcp(
           },
         })),
       }));
-      server.setRequestHandler('tools/call', async (request) => {
+      server.setRequestHandler('tools/call', async (request, context) => {
         try {
           const outcome = await execution.call(
             p,
             request.params.name,
             request.params.arguments ?? {},
             req.get('idempotency-key'),
+            context.mcpReq.signal,
           );
           return {
             content: [{ type: 'text' as const, text: JSON.stringify(outcome) }],
@@ -54,6 +60,12 @@ export async function handleMcp(
             isError: ['failed', 'denied', 'rejected', 'unknown'].includes(outcome.status),
           };
         } catch (e) {
+          // Protocol capability errors must keep their HTTP/JSON-RPC mapping. Never
+          // forward a connector-supplied error message or arbitrary error data.
+          if (e instanceof MissingRequiredClientCapabilityError)
+            throw new MissingRequiredClientCapabilityError({
+              requiredCapabilities: e.requiredCapabilities,
+            });
           return {
             content: [{ type: 'text' as const, text: JSON.stringify(publicError(e)) }],
             isError: true,

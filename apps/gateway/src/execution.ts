@@ -1,99 +1,75 @@
 import { randomUUID } from 'node:crypto';
-import { audit, type Database, type Sql } from '../../../packages/database/src/index.js';
+import { type Database, type Sql } from '../../../packages/database/src/index.js';
 import {
   AppError,
   risks,
   publicError,
   type Principal,
   type ToolRecord,
-  type Connection,
   type JsonObject,
 } from '../../../packages/shared/src/index.js';
 import { canonical, hash, redact, type SecretVault } from '../../../packages/shared/src/secrets.js';
-import {
-  canUse,
-  evaluate,
-  defaultPolicy,
-  type Policy,
-} from '../../../packages/policy-engine/src/index.js';
+import { canUse, evaluate } from '../../../packages/policy-engine/src/index.js';
 import { validateInput } from '../../../packages/mcp-core/src/validation.js';
 import type { ConnectorWorker } from '../../../services/connector-worker/src/index.js';
 import type { Authenticator } from './auth.js';
+import type {
+  ExecutionRecord,
+  ExecutionStore,
+  ExecutionTransaction,
+} from '../../../packages/shared/src/storage.js';
+import {
+  PostgresExecutionStore,
+  postgresTransaction,
+} from '../../../packages/database/src/execution-store.js';
 import { classifyFailure } from '../../../packages/shared/src/failures.js';
 import { newTraceId, traceContext } from '../../../packages/shared/src/tracing.js';
 import { scrubSecrets } from '../../../packages/shared/src/secrets.js';
 import type { OAuthService } from './oauth.js';
 import { logger } from '../../../packages/shared/src/logging.js';
 import { withSpan } from '../../../packages/shared/src/telemetry.js';
-export interface Execution {
-  id: string;
-  organization_id: string;
-  tool_id: string | null;
-  tool_name: string;
-  principal: Principal;
-  arguments_encrypted: string | null;
-  request_hash: string;
-  status: string;
-  result_metadata: JsonObject | null;
-  error_metadata: JsonObject | null;
-  started_at: string;
-  trace_id: string;
-  parent_span_id?: string;
-}
+export type Execution = ExecutionRecord;
 export class ExecutionService {
+  readonly store: ExecutionStore;
   constructor(
     readonly db: Database,
     readonly vault: SecretVault,
     private worker: ConnectorWorker,
-    readonly auth: Authenticator,
+    readonly auth: Pick<Authenticator, 'refresh'>,
     private oauth?: OAuthService,
-  ) {}
-  async resolve(sql: Sql, p: Principal, name: string) {
-    const r = await sql.query<
-      ToolRecord & { connection_status: string; permission: boolean | undefined }
-    >(
-      `select t.*,c.status connection_status,p.allowed permission from tools t join connections c on c.organization_id=t.organization_id and c.id=t.connection_id left join tool_permissions p on p.organization_id=t.organization_id and p.tool_id=t.id and p.role=$3 where t.organization_id=$1 and t.name=$2`,
-      [p.organizationId, name, p.role],
-    );
-    const t = r.rows[0];
-    if (!t || t.connection_status !== 'active' || !canUse(p, t, t.permission ?? undefined))
+    store?: ExecutionStore,
+  ) {
+    this.store = store ?? new PostgresExecutionStore(db);
+  }
+  async resolve(tx: ExecutionTransaction, p: Principal, name: string) {
+    const tool = (await tx.tools(p, name))[0];
+    if (
+      !tool ||
+      tool.connection_status !== 'active' ||
+      !canUse(p, tool, tool.permission ?? undefined)
+    )
       throw new AppError('FORBIDDEN', 'Tool unavailable or permission denied', 403);
-    return t;
+    return tool;
   }
-  async list(p: Principal) {
-    return this.db.tenant(p.organizationId, async (sql) => {
-      const r = await sql.query<ToolRecord & { permission: boolean | undefined }>(
-        `select t.*,p.allowed permission from tools t join connections c on c.organization_id=t.organization_id and c.id=t.connection_id left join tool_permissions p on p.organization_id=t.organization_id and p.tool_id=t.id and p.role=$2 where t.organization_id=$1 and c.status='active' order by t.name`,
-        [p.organizationId, p.role],
-      );
-      return r.rows.filter((t) => canUse(p, t, t.permission ?? undefined));
-    });
-  }
-  async policy(sql: Sql, org: string) {
-    return (
-      (await sql.query<Policy>('select * from approval_policies where organization_id=$1', [org]))
-        .rows[0] ?? defaultPolicy
+  list(p: Principal) {
+    return this.store.transaction(p.organizationId, async (tx) =>
+      (await tx.tools(p)).filter(
+        (t) => t.connection_status === 'active' && canUse(p, t, t.permission ?? undefined),
+      ),
     );
   }
-  async step(sql: Sql, org: string, id: string, stage: string, metadata: unknown = {}) {
-    await sql.query(
-      'insert into execution_steps(organization_id,execution_id,stage,metadata) values($1,$2,$3,$4)',
-      [org, id, stage, JSON.stringify(metadata)],
-    );
+  // Backward-compatible management adapter; execution/approval use semantic stores.
+  policy(sql: Sql, org: string) {
+    return postgresTransaction(sql, org).policy();
   }
-  async call(p: Principal, name: string, args: JsonObject, key?: string) {
+  async call(p: Principal, name: string, args: JsonObject, key?: string, signal?: AbortSignal) {
     const id = randomUUID(),
-      idempotencyKey = key ?? randomUUID(),
-      fingerprint = hash(canonical({ name, args, user: p.userId, key: p.apiKeyId }));
+      idempotencyKey = key ?? randomUUID();
+    const fingerprint = hash(canonical({ name, args, user: p.userId, key: p.apiKeyId }));
     if (idempotencyKey.length > 160)
       throw new AppError('INVALID_IDEMPOTENCY_KEY', 'Idempotency key too long');
-    const initial = await this.db.tenant(p.organizationId, async (sql) => {
-      const existing = (
-        await sql.query<Execution>(
-          'select * from executions where organization_id=$1 and idempotency_key=$2',
-          [p.organizationId, idempotencyKey],
-        )
-      ).rows[0];
+    const initial = await this.store.transaction(p.organizationId, async (tx) => {
+      const existing = await tx.findByKey(idempotencyKey);
       if (existing) {
         if (existing.request_hash !== fingerprint)
           throw new AppError(
@@ -107,77 +83,51 @@ export class ExecutionService {
         decision = { approval: false, reason: '' },
         failure: unknown;
       try {
-        tool = await this.resolve(sql, p, name);
+        tool = await this.resolve(tx, p, name);
         validateInput(tool.input_schema, args);
         decision = await withSpan(
           'gateway.policy',
           { organizationId: p.organizationId, tool: name, risk: tool.risk },
-          async () => evaluate(tool!, await this.policy(sql, p.organizationId)),
+          async () => evaluate(tool!, await tx.policy()),
         );
       } catch (e) {
         failure = e;
       }
       const status = failure ? 'denied' : decision.approval ? 'pending' : 'running';
-      const encrypted = failure
-        ? null
-        : this.vault.seal(args, `${p.organizationId}:execution:${id}`);
-      const r = await sql.query<Execution>(
-        `insert into executions(id,organization_id,request_id,user_id,api_key_id,tool_id,tool_name,principal,arguments_redacted,arguments_encrypted,request_hash,idempotency_key,status,error_metadata) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) on conflict(organization_id,idempotency_key) do nothing returning *`,
-        [
-          id,
-          p.organizationId,
-          randomUUID(),
-          p.userId ?? null,
-          p.apiKeyId ?? null,
-          tool?.id ?? null,
-          name,
-          JSON.stringify(p),
-          JSON.stringify(failure ? { redacted: true } : redact(args, tool?.input_schema)),
-          encrypted,
-          fingerprint,
-          idempotencyKey,
-          status,
-          failure
-            ? JSON.stringify({ ...publicError(failure), ...classifyFailure(failure, 'READ') })
-            : null,
-        ],
-      );
-      if (!r.rows[0]) {
-        const other = (
-          await sql.query<Execution>(
-            'select * from executions where organization_id=$1 and idempotency_key=$2',
-            [p.organizationId, idempotencyKey],
-          )
-        ).rows[0]!;
-        if (other.request_hash !== fingerprint)
+      const execution = await tx.create({
+        id,
+        principal: p,
+        name,
+        toolId: tool?.id,
+        redacted: failure ? { redacted: true } : redact(args, tool?.input_schema),
+        encrypted: failure ? null : this.vault.seal(args, `${p.organizationId}:execution:${id}`),
+        fingerprint,
+        key: idempotencyKey,
+        status,
+        error: failure ? { ...publicError(failure), ...classifyFailure(failure, 'READ') } : null,
+      });
+      if (!execution) {
+        const other = await tx.findByKey(idempotencyKey);
+        if (!other || other.request_hash !== fingerprint)
           throw new AppError('IDEMPOTENCY_CONFLICT', 'Idempotency conflict', 409);
         return { execution: other, dispatch: false };
       }
-      await this.step(sql, p.organizationId, id, 'authenticated');
-      const traceId = traceContext.getStore()?.traceId ?? newTraceId();
-      await sql.query(
-        'update executions set trace_id=$3,parent_span_id=$4 where organization_id=$1 and id=$2',
-        [p.organizationId, id, traceId, traceContext.getStore()?.spanId ?? null],
-      );
-      r.rows[0].trace_id = traceId;
-      r.rows[0].parent_span_id = traceContext.getStore()?.spanId;
-      if (failure)
-        await sql.query(
-          'update executions set finished_at=now(),duration_ms=0 where organization_id=$1 and id=$2',
-          [p.organizationId, id],
-        );
-      await this.step(sql, p.organizationId, id, failure ? 'denied' : 'policy_evaluated', {
-        reason: decision.reason,
-      });
+      await tx.step(id, 'authenticated');
+      execution.trace_id = traceContext.getStore()?.traceId ?? newTraceId();
+      execution.parent_span_id = traceContext.getStore()?.spanId;
+      await tx.trace(id, execution.trace_id, execution.parent_span_id);
+      await tx.step(id, failure ? 'denied' : 'policy_evaluated', { reason: decision.reason });
       if (decision.approval && tool)
-        await sql.query(
-          'insert into approval_requests(organization_id,execution_id,risk,reason,requested_by) values($1,$2,$3,$4,$5)',
-          [p.organizationId, id, tool.risk, decision.reason, p.userId ?? null],
-        );
-      await audit(sql, p, 'tool.requested', id, { tool: name, status });
-      return { execution: r.rows[0], dispatch: status === 'running' };
+        await tx.createApproval(id, tool.risk, decision.reason, p.userId);
+      await tx.audit({
+        principal: p,
+        action: 'tool.requested',
+        target: id,
+        metadata: { tool: name, status },
+      });
+      return { execution, dispatch: status === 'running' };
     });
-    if (initial.dispatch) return this.dispatch(initial.execution, p);
+    if (initial.dispatch) return this.dispatch(initial.execution, p, signal);
     return this.response(initial.execution);
   }
   response(e: Execution) {
@@ -189,16 +139,16 @@ export class ExecutionService {
       ...(e.error_metadata ? { error: e.error_metadata } : {}),
     };
   }
-  async dispatch(e: Execution, p: Principal) {
+  async dispatch(e: Execution, p: Principal, signal?: AbortSignal) {
     const started = Date.now();
     let risk: ToolRecord['risk'] = 'WRITE';
     let oauthConnection: string | undefined, usedToken: string | undefined;
     const events: { stage: string; metadata: Record<string, unknown> }[] = [];
     const flushTrace = async () => {
       if (events.length)
-        await this.db.tenant(p.organizationId, async (sql) => {
+        await this.store.transaction(p.organizationId, async (tx) => {
           for (const event of events.splice(0))
-            await this.step(sql, p.organizationId, e.id, event.stage, {
+            await tx.step(e.id, event.stage, {
               ...event.metadata,
               traceId: e.trace_id,
             });
@@ -206,45 +156,23 @@ export class ExecutionService {
     };
     try {
       const current = await this.auth.refresh(p);
-      const data = await this.db.tenant(p.organizationId, async (sql) => {
-        const tool = await this.resolve(sql, current, e.tool_name);
-        if (evaluate(tool, await this.policy(sql, p.organizationId)).approval) {
-          const approval = (
-            await sql.query(
-              "select id from approval_requests where organization_id=$1 and execution_id=$2 and status='approved'",
-              [p.organizationId, e.id],
-            )
-          ).rows[0];
-          if (!approval)
-            throw new AppError(
-              'APPROVAL_REQUIRED',
-              'Policy changed before dispatch; submit a new request',
-              409,
-            );
-        }
-        const connection = (
-          await sql.query<Connection>(
-            'select * from connections where organization_id=$1 and id=$2',
-            [p.organizationId, tool.connection_id],
-          )
-        ).rows[0]!;
-        const secret = (
-          await sql.query<{ ciphertext: string }>(
-            'select ciphertext from connection_secrets where organization_id=$1 and connection_id=$2',
-            [p.organizationId, tool.connection_id],
-          )
-        ).rows[0];
-        await this.step(sql, p.organizationId, e.id, 'dispatch_started');
-        await sql.query(
-          'update executions set connector_id=$3 where organization_id=$1 and id=$2',
-          [p.organizationId, e.id, connection.connector_id],
-        );
+      const data = await this.store.transaction(p.organizationId, async (tx) => {
+        const tool = await this.resolve(tx, current, e.tool_name);
+        if (evaluate(tool, await tx.policy()).approval && !(await tx.approved(e.id)))
+          throw new AppError(
+            'APPROVAL_REQUIRED',
+            'Policy changed before dispatch; submit a new request',
+            409,
+          );
+        const { connection, ciphertext } = await tx.connection(tool.connection_id);
+        await tx.step(e.id, 'dispatch_started');
+        await tx.connector(e.id, connection.connector_id);
         return {
           tool,
           connection,
-          secrets: secret
+          secrets: ciphertext
             ? this.vault.open<Record<string, string>>(
-                secret.ciphertext,
+                ciphertext,
                 `${p.organizationId}:connection:${connection.id}`,
               )
             : {},
@@ -306,7 +234,9 @@ export class ExecutionService {
                 organizationId: p.organizationId,
                 database: this.db,
                 executionId: e.id,
-                signal: AbortSignal.timeout(30000),
+                signal: signal
+                  ? AbortSignal.any([signal, AbortSignal.timeout(30000)])
+                  : AbortSignal.timeout(30000),
               }),
           ),
       );
@@ -356,13 +286,10 @@ export class ExecutionService {
     error: unknown,
     duration: number,
   ) {
-    await this.db.tenant(p.organizationId, async (sql) => {
-      await sql.query(
-        "update executions set status=$3,result_metadata=$4,error_metadata=$5,finished_at=now(),duration_ms=$6,arguments_encrypted=null where organization_id=$1 and id=$2 and status='running'",
-        [p.organizationId, e.id, status, JSON.stringify(result), JSON.stringify(error), duration],
-      );
-      await this.step(sql, p.organizationId, e.id, status);
-      await audit(sql, p, `tool.${status}`, e.id);
+    await this.store.transaction(p.organizationId, async (tx) => {
+      await tx.finish(e.id, status, result, error, duration);
+      await tx.step(e.id, status);
+      await tx.audit({ principal: p, action: `tool.${status}`, target: e.id });
     });
     logger.info(
       {

@@ -50,3 +50,38 @@ Names are `namespace.name` (for example `crm.customer.get`), never generic unqua
 Add behavioral connector tests, error/timeout cases and tenant/secret handling checks. Never log input secrets, authorization headers or raw upstream errors. Use `AppError` only for sanitized messages. Never introduce an arbitrary SQL tool or direct browser-to-connector execution route. Browser automation remains an unimplemented `BrowserAutomationExtension` boundary in V1.
 
 V1.1 runs deployed modules in disposable Node processes for discovery, tests and execution. Do not rely on module-global mutable state surviving between calls. Return JSON-serializable bounded values, respect the AbortSignal, and pass the execution UUID to upstream idempotency mechanisms. See [worker boundary](worker-boundary.md) and [execution semantics](execution-semantics.md). Provider-neutral OAuth adapters are documented separately in [OAuth](oauth.md).
+
+## V1.3 contract
+
+Run `pnpm test:connectors` after local Supabase setup. It runs six real connector
+implementations with local upstream fixtures; PostgreSQL uses a disposable real
+database. Google is a fixture, not evidence of real Google consent.
+
+`packages/connector-sdk/src/testing.ts` exports a runner-independent harness:
+
+```ts
+await testConnectorContract(connector, {
+  context, // local upstream, tenant, secrets, database, executionId, AbortSignal
+  toolName: 'inventory.item.get',
+  arguments: { sku: 'example' },
+  assertResult: (result) => assert.deepEqual(result, expected),
+  assertIdempotency: (executionId) => assert.equal(receivedHeader, executionId),
+});
+```
+
+The harness checks metadata, names, schemas, risks, discovery, successful bounded
+JSON, semantic output, unknown tools, pre-aborted calls, tenant binding and
+credential scrubbing. Idempotency assertions apply only to connectors whose
+upstream supports it. Boundary tests additionally check deadlines, AbortSignal,
+error sanitization, duplicate definitions and oversized/invalid output. Existing
+security/audit tests cover process termination and ambiguous writes.
+
+`ToolDefinition.outputSchema` optionally validates an object result inside the
+worker. It is not yet part of persisted registry metadata or MCP advertisement.
+Dynamic connector `config` must exactly match its current discovered operation;
+raise a tool's baseline risk or change config by revoking/reimporting the tool.
+An AbortSignal race bounds waiting only; disposable processes provide hard stops.
+Neither mechanism proves that an external write was rolled back.
+
+See [simple-project](../examples/simple-project/README.md) for a plugin that calls
+a separate backend, including READ/WRITE/CRITICAL tools and upstream idempotency.
