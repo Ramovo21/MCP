@@ -1,4 +1,5 @@
 import type { Database } from '../../database/src/index.js';
+import { validateConnectorMetadata } from './contract.js';
 import {
   AppError,
   toolName,
@@ -20,6 +21,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: JsonObject;
+  outputSchema?: JsonObject;
   risk: Risk;
   config?: JsonObject;
   execute?: (args: JsonObject, ctx: ConnectorContext) => Promise<unknown>;
@@ -37,7 +39,8 @@ export interface Connector {
 export function defineConnector(
   def: Omit<Connector, 'discover' | 'execute'> & { tools: ToolDefinition[] },
 ): Connector {
-  for (const t of def.tools) toolName.parse(`${t.namespace}.${t.name}`);
+  const names = def.tools.map((t) => toolName.parse(`${t.namespace}.${t.name}`));
+  if (new Set(names).size !== names.length) throw new Error('Duplicate connector tool name');
   return {
     ...def,
     async discover() {
@@ -53,6 +56,7 @@ export function defineConnector(
 export class ConnectorRegistry {
   private plugins = new Map<string, Connector>();
   register(connector: Connector) {
+    validateConnectorMetadata(connector);
     if (this.plugins.has(connector.id)) throw new Error('Duplicate connector ' + connector.id);
     this.plugins.set(connector.id, connector);
     return this;

@@ -1,10 +1,32 @@
 # OmniMCP
 
-V1.2 adds a separate private Worker service, real OpenTelemetry export, and a small Google Workspace READ connector. Public hosting and real Google consent require deployment-specific credentials; local verification does not imply a live Internet deployment. See [staging deployment](docs/staging-deployment.md), [MCP verification](docs/staging-mcp-verification.md), [observability](docs/observability.md) and [V1.2 evidence](docs/v1.2-staging-report.md).
+V1.3 adds a reusable composition API, authentication/tenant and transactional execution/audit adapters, connector contracts, and official MCP conformance checks. Start with the [integration guide](docs/integration-guide.md), [runnable example](examples/simple-project/README.md), [conformance evidence](docs/mcp-conformance.md) and [V1.3 report](docs/v1.3-report.md).
+
+The existing private Worker, OpenTelemetry and Google Workspace READ connector remain available. Local tests do not prove public deployment or real Google consent. See [staging deployment](docs/staging-deployment.md) and [observability](docs/observability.md).
 
 **Universal AI Integration & Action Gateway.** A multi-tenant tool registry, execution gateway, and management console for AI clients. Integrations are plugins; every user-triggered call passes through server-side authorization, policy, durable execution tracking, and human approval when required.
 
 Uses MCP **2026-07-28**, official `@modelcontextprotocol/server`, `@modelcontextprotocol/client` and Node adapter **2.0.0**, Streamable HTTP, Node >=22.19, strict TypeScript, pnpm, Next.js, Tailwind, and Supabase Auth/PostgreSQL/RLS. No browser automation runs in V1.
+
+Use OmniMCP to put one authenticated, governed action interface in front of existing APIs, databases or MCP servers. A new project supplies connectors and adapters; it does not edit MCP transport. The default SaaS console still uses Supabase/PostgreSQL. Advertised MCP capability is `tools`, with stateless `server/discover`, `tools/list` and `tools/call`; optional resources, prompts, tasks and sampling workflows are not provided.
+
+## Reuse and verification
+
+```sh
+pnpm verify             # lint, types, unit, integration, conformance, build
+pnpm test:conformance   # official runner + local protocol assertions; no database
+# After local Supabase setup below:
+pnpm test:connectors    # all six connectors, including disposable real PostgreSQL
+pnpm test:live          # Supabase/RLS and example via isolated worker
+pnpm test:audit         # real gateway security/failure regression
+pnpm example:simple    # separate local project on port 4200
+# Another terminal:
+pnpm example:verify
+```
+
+`createOmniMCP` accepts identity, tenant, secret and execution-store adapters while
+preserving the same approval and worker path. See the integration guide for the
+remaining PostgreSQL management/worker-claim dependencies and custom-store requirements.
 
 ## Run locally
 

@@ -55,13 +55,24 @@ export function remoteMcpConnector(http = new SafeHttp()): Connector {
         const c = config.parse(ctx.connection.config),
           tools = [];
         let cursor: string | undefined;
+        const seen = new Set<string>();
         do {
-          const page = await client.listTools(cursor ? { cursor } : {});
+          // listTools() auto-aggregates in v2; raw request preserves page boundaries
+          // so OmniMCP enforces its own tool cap and rejects looping cursors.
+          const page = await client.request({
+            method: 'tools/list',
+            params: cursor !== undefined ? { cursor } : {},
+          });
           tools.push(...page.tools);
           cursor = page.nextCursor;
+          if (cursor !== undefined) {
+            if (seen.has(cursor) || seen.size >= 500)
+              throw new AppError('INVALID_CURSOR', 'Upstream pagination did not terminate');
+            seen.add(cursor);
+          }
           if (tools.length > 500)
             throw new AppError('TOO_MANY_TOOLS', 'Upstream tool limit exceeded');
-        } while (cursor);
+        } while (cursor !== undefined);
         return tools.map((t) => ({
           namespace: c.namespace,
           name: t.name.replace(/[^a-zA-Z0-9_.-]/g, '_'),
